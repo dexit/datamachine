@@ -4,9 +4,15 @@
  * Modal for handling OAuth authentication with dual auth types support.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { useState, useEffect, useCallback } from '@wordpress/element';
 import { Modal, Button, Notice } from '@wordpress/components';
 import { __, sprintf } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import { useFormState, useAsyncOperation } from '../../hooks/useFormState';
 import ConnectionStatus from './oauth/ConnectionStatus';
 import AccountDetails from './oauth/AccountDetails';
@@ -17,12 +23,13 @@ import RedirectUrlDisplay from './oauth/RedirectUrlDisplay';
 /**
  * OAuth Authentication Modal Component
  *
- * @param {Object} props - Component props
- * @param {Function} props.onClose - Close handler
- * @param {string} props.handlerSlug - Handler slug
- * @param {Object} props.handlerInfo - Handler metadata
- * @param {Function} props.onSuccess - Success callback
- * @returns {React.ReactElement|null} OAuth authentication modal
+ * @param {Object}   props                  - Component props
+ * @param {Function} props.onClose          - Close handler
+ * @param {string}   props.handlerSlug      - Handler slug
+ * @param {Object}   props.handlerInfo      - Handler metadata
+ * @param {Function} props.onSuccess        - Success callback
+ * @param            props.onBackToSettings
+ * @return {React.ReactElement|null} OAuth authentication modal
  */
 export default function OAuthAuthenticationModal( {
 	onClose,
@@ -31,8 +38,12 @@ export default function OAuthAuthenticationModal( {
 	handlerInfo = {},
 	onSuccess,
 } ) {
-	const [ connected, setConnected ] = useState( !! handlerInfo?.is_authenticated );
-	const [ accountData, setAccountData ] = useState( handlerInfo?.account_details || null );
+	const [ connected, setConnected ] = useState(
+		!! handlerInfo?.is_authenticated
+	);
+	const [ accountData, setAccountData ] = useState(
+		handlerInfo?.account_details || null
+	);
 	const [ error, setError ] = useState( null );
 	const [ success, setSuccess ] = useState( null );
 	const [ isStatusLoading, setIsStatusLoading ] = useState( false );
@@ -41,65 +52,74 @@ export default function OAuthAuthenticationModal( {
 	// Determine auth type from handler metadata
 	const authType = handlerInfo.auth_type || 'oauth2'; // oauth2, oauth1, or simple
 
-	const fetchConnectionStatus = useCallback( async ( { silent = false } = {} ) => {
-		if ( ! handlerSlug ) {
-			return null;
-		}
-
-		setIsStatusLoading( true );
-
-		try {
-			const response = await wp.apiFetch( {
-				path: `/datamachine/v1/auth/${ handlerSlug }/status`,
-			} );
-
-			if ( ! response?.success ) {
-				throw new Error(
-					response?.message ||
-						__( 'Unable to load connection status.', 'datamachine' )
-				);
+	const fetchConnectionStatus = useCallback(
+		async ( { silent = false } = {} ) => {
+			if ( ! handlerSlug ) {
+				return null;
 			}
 
-			const statusData = response.data || {};
-			const isAuthenticated = !! statusData.authenticated;
+			setIsStatusLoading( true );
 
-			setConnected( isAuthenticated );
-			setAccountData( statusData.account_details || null );
+			try {
+				const response = await wp.apiFetch( {
+					path: `/datamachine/v1/auth/${ handlerSlug }/status`,
+				} );
 
-			// Update form with masked config if available and not already edited
-			if ( statusData.config_status && ! apiConfigForm.isDirty ) {
-				apiConfigForm.reset( statusData.config_status );
+				if ( ! response?.success ) {
+					throw new Error(
+						response?.message ||
+							__(
+								'Unable to load connection status.',
+								'data-machine'
+							)
+					);
+				}
+
+				const statusData = response.data || {};
+				const isAuthenticated = !! statusData.authenticated;
+
+				setConnected( isAuthenticated );
+				setAccountData( statusData.account_details || null );
+
+				// Update form with masked config if available and not already edited
+				if ( statusData.config_status && ! apiConfigForm.isDirty ) {
+					apiConfigForm.reset( statusData.config_status );
+				}
+
+				if ( statusData.error ) {
+					setError(
+						statusData.error_message ||
+							__(
+								'Authentication failed. Please try again.',
+								'data-machine'
+							)
+					);
+				} else if ( ! silent ) {
+					setError( null );
+				}
+
+				return statusData;
+			} catch ( statusError ) {
+				if ( ! silent ) {
+					setError(
+						statusError?.message ||
+							__(
+								'Unable to load connection status.',
+								'data-machine'
+							)
+					);
+				}
+				throw statusError;
+			} finally {
+				setIsStatusLoading( false );
 			}
+		},
+		[ handlerSlug ]
+	);
 
-			if ( statusData.error ) {
-				setError(
-					statusData.error_message ||
-						__(
-							'Authentication failed. Please try again.',
-							'datamachine'
-						)
-				);
-			} else if ( ! silent ) {
-				setError( null );
-			}
-
-			return statusData;
-		} catch ( statusError ) {
-			if ( ! silent ) {
-				setError(
-					statusError?.message ||
-						__( 'Unable to load connection status.', 'datamachine' )
-				);
-			}
-			throw statusError;
-		} finally {
-			setIsStatusLoading( false );
-		}
-	}, [ handlerSlug ] );
-
-	const apiConfigForm = useFormState({
+	const apiConfigForm = useFormState( {
 		initialData: {},
-		onSubmit: async (config) => {
+		onSubmit: async ( config ) => {
 			try {
 				await wp.apiFetch( {
 					path: `/datamachine/v1/auth/${ handlerSlug }`,
@@ -110,13 +130,18 @@ export default function OAuthAuthenticationModal( {
 				if ( authType === 'simple' ) {
 					setConnected( true );
 					setAccountData( { ...config } );
-					setSuccess( __( 'Connected successfully!', 'datamachine' ) );
+					setSuccess(
+						__( 'Connected successfully!', 'data-machine' )
+					);
 					try {
 						await fetchConnectionStatus( { silent: true } );
 					} catch ( statusError ) {
 						// Status refresh is best-effort; network failures shouldn't break the save flow.
 						// eslint-disable-next-line no-console
-						console.warn( 'Auth status refresh failed:', statusError );
+						console.warn(
+							'Auth status refresh failed:',
+							statusError
+						);
 					}
 					if ( onSuccess ) {
 						onSuccess();
@@ -125,18 +150,18 @@ export default function OAuthAuthenticationModal( {
 					setSuccess(
 						__(
 							'Configuration saved! You can now connect your account.',
-							'datamachine'
+							'data-machine'
 						)
 					);
 				}
 			} catch ( error ) {
 				throw new Error(
 					error.message ||
-						__( 'Failed to save configuration.', 'datamachine' )
+						__( 'Failed to save configuration.', 'data-machine' )
 				);
 			}
 		},
-	});
+	} );
 
 	const disconnectOperation = useAsyncOperation();
 
@@ -161,7 +186,10 @@ export default function OAuthAuthenticationModal( {
 				// Avoid noisy console errors when modal unmounts mid-request.
 				if ( isMounted ) {
 					// eslint-disable-next-line no-console
-					console.warn( 'Unable to refresh auth status:', statusError );
+					console.warn(
+						'Unable to refresh auth status:',
+						statusError
+					);
 				}
 			}
 		};
@@ -175,13 +203,14 @@ export default function OAuthAuthenticationModal( {
 
 	/**
 	 * Handle OAuth success
+	 * @param account
 	 */
 	const handleOAuthSuccess = ( account ) => {
 		setConnected( true );
 		if ( account ) {
 			setAccountData( account );
 		}
-		setSuccess( __( 'Account connected successfully!', 'datamachine' ) );
+		setSuccess( __( 'Account connected successfully!', 'data-machine' ) );
 		setError( null );
 
 		fetchConnectionStatus( { silent: true } ).catch( () => {
@@ -195,6 +224,7 @@ export default function OAuthAuthenticationModal( {
 
 	/**
 	 * Handle OAuth error
+	 * @param errorMessage
 	 */
 	const handleOAuthError = ( errorMessage ) => {
 		setError( errorMessage );
@@ -216,7 +246,7 @@ export default function OAuthAuthenticationModal( {
 			! confirm(
 				__(
 					'Are you sure you want to disconnect this account? This will remove the access token but keep your API configuration.',
-					'datamachine'
+					'data-machine'
 				)
 			)
 		) {
@@ -232,7 +262,7 @@ export default function OAuthAuthenticationModal( {
 			if ( ! response?.success ) {
 				throw new Error(
 					response?.message ||
-						__( 'Failed to disconnect account.', 'datamachine' )
+						__( 'Failed to disconnect account.', 'data-machine' )
 				);
 			}
 
@@ -254,7 +284,7 @@ export default function OAuthAuthenticationModal( {
 				onSuccess();
 			}
 
-			return __( 'Account disconnected successfully!', 'datamachine' );
+			return __( 'Account disconnected successfully!', 'data-machine' );
 		} );
 	};
 
@@ -263,25 +293,38 @@ export default function OAuthAuthenticationModal( {
 	// 1. Explicitly requested (showConfigForm is true)
 	// 2. Not connected (initial state)
 	// 3. Simple auth (always needs form visible to edit)
-	const isConfigFormVisible = showConfigForm || ! connected || authType === 'simple';
+	const isConfigFormVisible =
+		showConfigForm || ! connected || authType === 'simple';
 
 	return (
 		<Modal
-			title={ handlerInfo.label ?
-				sprintf( __( 'Connect %s Account', 'datamachine' ), handlerInfo.label ) :
-				__( 'Connect Account', 'datamachine' )
+			title={
+				handlerInfo.label
+					? sprintf(
+							__( 'Connect %s Account', 'data-machine' ),
+							handlerInfo.label
+					  )
+					: __( 'Connect Account', 'data-machine' )
 			}
 			onRequestClose={ onClose }
 			className="datamachine-oauth-modal"
 		>
-		<div className="datamachine-modal-content">
-			{ (error || apiConfigForm.error || disconnectOperation.error) && (
-				<div className="datamachine-modal-error notice notice-error">
-					<p>{ error || apiConfigForm.error || disconnectOperation.error }</p>
-				</div>
-			) }
+			<div className="datamachine-modal-content">
+				{ ( error ||
+					apiConfigForm.error ||
+					disconnectOperation.error ) && (
+					<div className="datamachine-modal-error notice notice-error">
+						<p>
+							{ error ||
+								apiConfigForm.error ||
+								disconnectOperation.error }
+						</p>
+					</div>
+				) }
 
-				{ (success || apiConfigForm.success || disconnectOperation.success) && (
+				{ ( success ||
+					apiConfigForm.success ||
+					disconnectOperation.success ) && (
 					<Notice
 						status="success"
 						isDismissible
@@ -291,14 +334,20 @@ export default function OAuthAuthenticationModal( {
 							disconnectOperation.reset();
 						} }
 					>
-						<p>{ success || apiConfigForm.success || disconnectOperation.success }</p>
+						<p>
+							{ success ||
+								apiConfigForm.success ||
+								disconnectOperation.success }
+						</p>
 					</Notice>
 				) }
 
 				<div className="datamachine-modal-spacing--mb-20">
 					<div className="datamachine-modal-header-section">
 						<div>
-							<strong>{ __( 'Handler:', 'datamachine' ) }</strong>{ ' ' }
+							<strong>
+								{ __( 'Handler:', 'data-machine' ) }
+							</strong>{ ' ' }
 							{ handlerInfo.label || handlerSlug }
 						</div>
 						<ConnectionStatus connected={ connected } />
@@ -307,8 +356,8 @@ export default function OAuthAuthenticationModal( {
 					{ isStatusLoading && (
 						<p className="description">
 							{ __(
-								'Checking current connection status...',
-								'datamachine'
+								'Checking current connection status…',
+								'data-machine'
 							) }
 						</p>
 					) }
@@ -317,52 +366,73 @@ export default function OAuthAuthenticationModal( {
 						{ authType === 'oauth2'
 							? __(
 									'Click "Connect Account" to authorize access via OAuth.',
-									'datamachine'
+									'data-machine'
 							  )
 							: __(
 									'Enter your API credentials to connect.',
-									'datamachine'
+									'data-machine'
 							  ) }
 					</p>
 				</div>
 
-			{ isConfigFormVisible && (
-				<>
-					{ ( authType === 'oauth2' || authType === 'oauth1' ) && handlerInfo.callback_url && (
-						<RedirectUrlDisplay url={ handlerInfo.callback_url } />
-					) }
+				{ isConfigFormVisible && (
+					<>
+						{ ( authType === 'oauth2' || authType === 'oauth1' ) &&
+							handlerInfo.callback_url && (
+								<RedirectUrlDisplay
+									url={ handlerInfo.callback_url }
+								/>
+							) }
 
-					{ handlerInfo.auth_fields && (
-						<>
-							<APIConfigForm
+						{ handlerInfo.auth_fields && (
+							<>
+								<APIConfigForm
 									config={ apiConfigForm.data }
 									onChange={ apiConfigForm.updateData }
 									fields={ handlerInfo.auth_fields }
 								/>
 								<div className="datamachine-modal-spacing--mt-16">
 									<Button
-										variant={ authType === 'simple' ? 'primary' : 'secondary' }
+										variant={
+											authType === 'simple'
+												? 'primary'
+												: 'secondary'
+										}
 										onClick={ handleSimpleAuthSave }
 										disabled={ apiConfigForm.isSubmitting }
 										isBusy={ apiConfigForm.isSubmitting }
 									>
 										{ apiConfigForm.isSubmitting
-											? __( 'Saving...', 'datamachine' )
-											: ( authType === 'simple' ? __( 'Save Credentials', 'datamachine' ) : __( 'Save Configuration', 'datamachine' ) ) }
+											? __( 'Saving…', 'data-machine' )
+											: authType === 'simple'
+											? __(
+													'Save Credentials',
+													'data-machine'
+											  )
+											: __(
+													'Save Configuration',
+													'data-machine'
+											  ) }
 									</Button>
-									
+
 									{ /* Cancel button to hide form if we are already connected */ }
 									{ connected && (
 										<Button
 											variant="link"
-											onClick={ () => setShowConfigForm( false ) }
+											onClick={ () =>
+												setShowConfigForm( false )
+											}
 											className="datamachine-modal-spacing--ml-10"
 										>
-											{ __( 'Cancel', 'datamachine' ) }
+											{ __( 'Cancel', 'data-machine' ) }
 										</Button>
 									) }
 								</div>
-								{ authType === 'oauth2' && <div className="datamachine-modal-spacing--mb-16 datamachine-modal-spacing--mt-16"><hr /></div> }
+								{ authType === 'oauth2' && (
+									<div className="datamachine-modal-spacing--mb-16 datamachine-modal-spacing--mt-16">
+										<hr />
+									</div>
+								) }
 							</>
 						) }
 
@@ -372,7 +442,11 @@ export default function OAuthAuthenticationModal( {
 									handlerSlug={ handlerSlug }
 									onSuccess={ handleOAuthSuccess }
 									onError={ handleOAuthError }
-									disabled={ apiConfigForm.isSubmitting || disconnectOperation.isLoading || isStatusLoading }
+									disabled={
+										apiConfigForm.isSubmitting ||
+										disconnectOperation.isLoading ||
+										isStatusLoading
+									}
 								/>
 							</div>
 						) }
@@ -383,7 +457,10 @@ export default function OAuthAuthenticationModal( {
 					<>
 						<AccountDetails account={ accountData } />
 
-						<div className="datamachine-modal-spacing--mt-16" style={ { display: 'flex', gap: '10px' } }>
+						<div
+							className="datamachine-modal-spacing--mt-16"
+							style={ { display: 'flex', gap: '10px' } }
+						>
 							<Button
 								variant="secondary"
 								onClick={ handleDisconnect }
@@ -392,44 +469,54 @@ export default function OAuthAuthenticationModal( {
 								className="datamachine-button--destructive"
 							>
 								{ disconnectOperation.isLoading
-									? __( 'Disconnecting...', 'datamachine' )
+									? __( 'Disconnecting…', 'data-machine' )
 									: __(
 											'Disconnect Account',
-											'datamachine'
+											'data-machine'
 									  ) }
 							</Button>
-							
+
 							{ /* Change API Config Button */ }
-							{ ( authType === 'oauth2' || authType === 'oauth1' ) && (
+							{ ( authType === 'oauth2' ||
+								authType === 'oauth1' ) && (
 								<Button
 									variant="secondary"
 									onClick={ () => setShowConfigForm( true ) }
 								>
-									{ __( 'Change API Configuration', 'datamachine' ) }
+									{ __(
+										'Change API Configuration',
+										'data-machine'
+									) }
 								</Button>
 							) }
 						</div>
 					</>
 				) }
 
-			<div className="datamachine-modal-actions">
-				{ onBackToSettings && (
+				<div className="datamachine-modal-actions">
+					{ onBackToSettings && (
+						<Button
+							variant="secondary"
+							onClick={ onBackToSettings }
+							disabled={
+								apiConfigForm.isSubmitting ||
+								disconnectOperation.isLoading
+							}
+						>
+							{ __( 'Back to Settings', 'data-machine' ) }
+						</Button>
+					) }
 					<Button
 						variant="secondary"
-						onClick={ onBackToSettings }
-						disabled={ apiConfigForm.isSubmitting || disconnectOperation.isLoading }
+						onClick={ onClose }
+						disabled={
+							apiConfigForm.isSubmitting ||
+							disconnectOperation.isLoading
+						}
 					>
-						{ __( 'Back to Settings', 'datamachine' ) }
+						{ __( 'Close', 'data-machine' ) }
 					</Button>
-				) }
-				<Button
-					variant="secondary"
-					onClick={ onClose }
-					disabled={ apiConfigForm.isSubmitting || disconnectOperation.isLoading }
-				>
-					{ __( 'Close', 'datamachine' ) }
-				</Button>
-			</div>
+				</div>
 			</div>
 		</Modal>
 	);

@@ -2,127 +2,151 @@
  * Pipeline Step Card Component
  *
  * Display individual pipeline step with configuration.
+ * AI step system prompt is editable inline — no modal needed.
  */
 
-import { useState, useEffect, useCallback, useRef } from '@wordpress/element';
-import {
-	Card,
-	CardBody,
-	Button,
-	TextareaControl,
-	Notice,
-} from '@wordpress/components';
+/**
+ * WordPress dependencies
+ */
+import { useCallback } from '@wordpress/element';
+import { Card, CardBody, Button } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
+import PromptField from '@shared/components/PromptField';
 import { updateSystemPrompt } from '../../utils/api';
-import { AUTO_SAVE_DELAY } from '../../utils/constants';
-import { useStepTypes, useTools } from '../../queries/config';
+import { useStepTypes } from '../../queries/config';
+
+/**
+ * Normalize a tool policy field into displayable labels.
+ *
+ * @param {Array|string|Object} value Tool policy field value.
+ * @return {Array<string>} Display labels.
+ */
+const normalizeToolPolicyList = ( value ) => {
+	if ( Array.isArray( value ) ) {
+		return value.filter( Boolean ).map( String );
+	}
+
+	if ( typeof value === 'string' && value ) {
+		return [ value ];
+	}
+
+	if ( value && typeof value === 'object' ) {
+		return Object.entries( value )
+			.filter( ( [ , enabled ] ) => Boolean( enabled ) )
+			.map( ( [ key ] ) => key );
+	}
+
+	return [];
+};
+
+/**
+ * Render a read-only tool policy row.
+ *
+ * @param {string}        label  Policy label.
+ * @param {Array<string>} values Policy values.
+ * @return {React.ReactElement|null} Policy row.
+ */
+const renderToolPolicyRow = ( label, values ) => {
+	if ( ! values.length ) {
+		return null;
+	}
+
+	return (
+		<div className="datamachine-ai-tool-policy-row">
+			<strong>{ label }</strong>
+			<div className="datamachine-ai-tool-policy-values">
+				{ values.map( ( value ) => (
+					<code key={ value }>{ value }</code>
+				) ) }
+			</div>
+		</div>
+	);
+};
 
 /**
  * Pipeline Step Card Component
  *
- * @param {Object} props - Component props
- * @param {Object} props.step - Step data
- * @param {number} props.pipelineId - Pipeline ID
- * @param {Object} props.pipelineConfig - AI configuration keyed by pipeline_step_id
- * @param {Function} props.onDelete - Delete handler
- * @param {Function} props.onConfigure - Configure handler
- * @returns {React.ReactElement} Pipeline step card
+ * @param {Object}   props                - Component props
+ * @param {Object}   props.step           - Step data
+ * @param {number}   props.pipelineId     - Pipeline ID
+ * @param {Object}   props.pipelineConfig - AI configuration keyed by pipeline_step_id
+ * @param {Function} props.onDelete       - Delete handler
+ * @return {React.ReactElement} Pipeline step card
  */
 export default function PipelineStepCard( {
 	step,
 	pipelineId,
 	pipelineConfig,
 	onDelete,
-	onConfigure,
 } ) {
 	// Use TanStack Query for data
 	const { data: stepTypes = {} } = useStepTypes();
-	const { data: toolsData = {} } = useTools();
-	const stepTypeInfo = stepTypes?.[ step.step_type ] || {};
-	const canConfigure = stepTypeInfo.has_pipeline_config === true;
-	const aiConfig =
-		step.step_type === 'ai'
-			? pipelineConfig[ step.pipeline_step_id ]
-			: null;
+	const isAiStep = step.step_type === 'ai';
+	const isSystemTask = step.step_type === 'system_task';
 
-	const [ localPrompt, setLocalPrompt ] = useState(
-		aiConfig?.system_prompt || ''
+	const stepConfig = pipelineConfig[ step.pipeline_step_id ] || null;
+	const enabledTools = normalizeToolPolicyList( stepConfig?.enabled_tools );
+	const disabledTools = normalizeToolPolicyList( stepConfig?.disabled_tools );
+	const toolCategories = normalizeToolPolicyList( stepConfig?.tool_categories );
+	const hasToolPolicy = Boolean(
+		enabledTools.length || disabledTools.length || toolCategories.length
 	);
-	const [ isSaving, setIsSaving ] = useState( false );
-	const [ error, setError ] = useState( null );
-	const saveTimeout = useRef( null );
+
+	// Resolve display label: step type registry, then legacy fallback for agent_ping.
+	const displayLabel = stepTypes[ step.step_type ]?.label
+		|| ( step.step_type === 'agent_ping' ? __( 'Agent Ping', 'data-machine' ) : step.step_type );
+
+	// For system_task steps, show the task name badge (e.g. "Agent Ping").
+	const systemTaskName = isSystemTask
+		? ( stepConfig?.handler_config?.task || step.handler_config?.task || '' )
+		: '';
 
 	/**
-	 * Sync local prompt with config changes
+	 * Save system prompt to API (AI steps)
 	 */
-	useEffect( () => {
-		if ( aiConfig ) {
-			setLocalPrompt( aiConfig.system_prompt || '' );
-		}
-	}, [ aiConfig ] );
-
-	/**
-	 * Save system prompt to API
-	 */
-	const savePrompt = useCallback(
+	const handleSavePrompt = useCallback(
 		async ( prompt ) => {
-			if ( ! aiConfig ) return;
+			if ( ! stepConfig ) {
+				return { success: false, message: 'No configuration found' };
+			}
 
-			const currentPrompt = aiConfig.system_prompt || '';
-			if ( prompt === currentPrompt ) return;
-
-			setIsSaving( true );
-			setError( null );
+			const currentPrompt = stepConfig.system_prompt || '';
+			if ( prompt === currentPrompt ) {
+				return { success: true };
+			}
 
 			try {
 				const response = await updateSystemPrompt(
 					step.pipeline_step_id,
 					prompt,
-					aiConfig.provider,
-					aiConfig.model,
-					[], // enabledTools - not available in inline editing
 					step.step_type,
 					pipelineId
 				);
 
 				if ( ! response.success ) {
-					setError(
-						response.message ||
-							__( 'Failed to update prompt', 'datamachine' )
-					);
-					setLocalPrompt( currentPrompt ); // Revert on error
+					return {
+						success: false,
+						message:
+							response.message ||
+							__( 'Failed to update prompt', 'data-machine' ),
+					};
 				}
+
+				return { success: true };
 			} catch ( err ) {
 				console.error( 'Prompt update error:', err );
-				setError(
-					err.message || __( 'An error occurred', 'datamachine' )
-				);
-				setLocalPrompt( currentPrompt ); // Revert on error
-			} finally {
-				setIsSaving( false );
+				return {
+					success: false,
+					message:
+						err.message ||
+						__( 'An error occurred', 'data-machine' ),
+				};
 			}
 		},
-		[ pipelineId, step.pipeline_step_id, step.step_type, aiConfig ]
-	);
-
-	/**
-	 * Handle prompt change with debouncing
-	 */
-	const handlePromptChange = useCallback(
-		( value ) => {
-			setLocalPrompt( value );
-
-			// Clear existing timeout
-			if ( saveTimeout.current ) {
-				clearTimeout( saveTimeout.current );
-			}
-
-			// Set new timeout for debounced save
-			saveTimeout.current = setTimeout( () => {
-				savePrompt( value );
-			}, AUTO_SAVE_DELAY );
-		},
-		[ savePrompt ]
+		[ pipelineId, step.pipeline_step_id, step.step_type, stepConfig ]
 	);
 
 	/**
@@ -130,7 +154,7 @@ export default function PipelineStepCard( {
 	 */
 	const handleDelete = useCallback( () => {
 		const confirmed = window.confirm(
-			__( 'Are you sure you want to remove this step?', 'datamachine' )
+			__( 'Are you sure you want to remove this step?', 'data-machine' )
 		);
 
 		if ( confirmed && onDelete ) {
@@ -138,102 +162,73 @@ export default function PipelineStepCard( {
 		}
 	}, [ step.pipeline_step_id, onDelete ] );
 
-	/**
-	 * Cleanup timeout on unmount
-	 */
-	useEffect( () => {
-		return () => {
-			if ( saveTimeout.current ) {
-				clearTimeout( saveTimeout.current );
-			}
-		};
-	}, [] );
-
 	return (
 		<Card
 			className={ `datamachine-pipeline-step-card datamachine-step-type--${ step.step_type }` }
 			size="small"
 		>
 			<CardBody>
-				{ error && (
-					<Notice
-						status="error"
-						isDismissible
-						onRemove={ () => setError( null ) }
-					>
-						{ error }
-					</Notice>
-				) }
-
 				<div className="datamachine-step-card-header">
-					<strong>{ stepTypes[step.step_type]?.label || step.step_type }</strong>
+					<strong>
+						{ displayLabel }
+					</strong>
+					{ systemTaskName && (
+						<span className="datamachine-step-card-task-badge">
+							{ systemTaskName }
+						</span>
+					) }
 				</div>
 
-				{ /* AI Configuration Display */ }
-				{ aiConfig && (
+				{ /* AI Step: inline system prompt editor */ }
+				{ isAiStep && stepConfig && (
 					<div className="datamachine-ai-config-display datamachine-step-card-ai-config">
-					<div className="datamachine-step-card-ai-label">
-						<strong>
-							{ __( 'AI Provider:', 'datamachine' ) }
-						</strong>{ ' ' }
-						{ aiConfig.provider || 'Not configured' }
-						{ ' | ' }
-						<strong>
-							{ __( 'Model:', 'datamachine' ) }
-						</strong>{ ' ' }
-						{ aiConfig.model || 'Not configured' }
-					</div>
-					<div className="datamachine-step-card-tools-label">
-						<strong>
-							{ __( 'Tools:', 'datamachine' ) }
-						</strong>{ ' ' }
-						{ aiConfig.enabled_tools?.length > 0
-							? aiConfig.enabled_tools
-									.map(
-										( toolId ) =>
-											toolsData[ toolId ]?.label || toolId
-									)
-									.join( ', ' )
-							: __( 'No tools enabled', 'datamachine' ) }
-					</div>
-
-						<TextareaControl
-							label={ __( 'System Prompt', 'datamachine' ) }
-							value={ localPrompt }
-							onChange={ handlePromptChange }
+						<PromptField
+							label={ __( 'System Prompt', 'data-machine' ) }
+							value={ stepConfig.system_prompt || '' }
+							onSave={ handleSavePrompt }
 							placeholder={ __(
-								'Enter system prompt for AI processing...',
-								'datamachine'
+								'Enter system prompt for AI processing…',
+								'data-machine'
 							) }
 							rows={ 6 }
-							help={
-								isSaving
-									? __( 'Saving...', 'datamachine' )
-									: null
-							}
 						/>
+						{ hasToolPolicy && (
+							<div className="datamachine-ai-tool-policy-summary">
+								<h4>
+									{ __( 'Tool Policy', 'data-machine' ) }
+								</h4>
+								<p>
+									{ __(
+										'Read-only summary of the pipeline AI step policy. Handler tools required by adjacent steps are resolved separately at runtime.',
+										'data-machine'
+									) }
+								</p>
+								{ renderToolPolicyRow(
+									__( 'Allowlist', 'data-machine' ),
+									enabledTools
+								) }
+								{ renderToolPolicyRow(
+									__( 'Denylist', 'data-machine' ),
+									disabledTools
+								) }
+								{ renderToolPolicyRow(
+									__( 'Categories', 'data-machine' ),
+									toolCategories
+								) }
+							</div>
+						) }
 					</div>
 				) }
 
 				{ /* Action Buttons */ }
 				<div className="datamachine-step-card-actions">
-					{ canConfigure && (
-						<Button
-							variant="secondary"
-							size="small"
-							onClick={ () => onConfigure && onConfigure( step ) }
-						>
-							{ __( 'Configure', 'datamachine' ) }
-						</Button>
-					) }
-
 					<Button
 						variant="secondary"
 						size="small"
 						isDestructive
 						onClick={ handleDelete }
 					>
-						{ __( 'Delete', 'datamachine' ) }
+						{ __( 'Delete', 'data-machine' ) }
 					</Button>
 				</div>
 			</CardBody>

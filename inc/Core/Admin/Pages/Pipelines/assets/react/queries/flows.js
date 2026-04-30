@@ -4,7 +4,13 @@
  * TanStack Query hooks for flow-related data operations.
  */
 
+/**
+ * External dependencies
+ */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+/**
+ * Internal dependencies
+ */
 import {
 	fetchFlows,
 	createFlow,
@@ -13,8 +19,12 @@ import {
 	duplicateFlow,
 	runFlow,
 	updateFlowHandler,
-	updateUserMessage,
+	addFlowHandler,
+	removeFlowHandler,
 	updateFlowSchedule,
+	updateFlowStepConfig,
+	fetchFlowMemoryFiles,
+	updateFlowMemoryFiles,
 } from '../utils/api';
 import { isSameId, normalizeId } from '../utils/ids';
 
@@ -61,8 +71,9 @@ const patchFlowInCache = ( queryClient, { pipelineId, flowId, patchFlow } ) => {
 		return;
 	}
 
-	queryClient.setQueryData( [ 'flows', 'single', cachedFlowId ], ( oldFlow ) =>
-		oldFlow ? patchFlow( oldFlow ) : oldFlow
+	queryClient.setQueryData(
+		[ 'flows', 'single', cachedFlowId ],
+		( oldFlow ) => ( oldFlow ? patchFlow( oldFlow ) : oldFlow )
 	);
 
 	if ( cachedPipelineId ) {
@@ -185,14 +196,18 @@ export const useDeleteFlow = () => {
 				queryClient.setQueriesData(
 					{ queryKey: [ 'flows', cachedPipelineId ], exact: false },
 					( oldData ) => {
-						if ( ! oldData?.flows || ! Array.isArray( oldData.flows ) ) {
+						if (
+							! oldData?.flows ||
+							! Array.isArray( oldData.flows )
+						) {
 							return oldData;
 						}
 
 						return {
 							...oldData,
 							flows: oldData.flows.filter(
-								( flow ) => ! isSameId( flow.flow_id, cachedFlowId )
+								( flow ) =>
+									! isSameId( flow.flow_id, cachedFlowId )
 							),
 							total: Math.max( 0, ( oldData.total || 0 ) - 1 ),
 						};
@@ -292,6 +307,8 @@ export const useUpdateFlowHandler = () => {
 			const stepConfig = response.data.step_config;
 			const handlerSettingsDisplay =
 				response.data.handler_settings_display;
+			const handlerSettingsDisplays =
+				response.data.handler_settings_displays;
 
 			if ( ! flowId || ! flowStepId || ! stepConfig ) {
 				return;
@@ -306,60 +323,80 @@ export const useUpdateFlowHandler = () => {
 					...stepConfig,
 					settings_display:
 						handlerSettingsDisplay || existingStep.settings_display,
+					handler_settings_displays:
+						handlerSettingsDisplays || existingStep.handler_settings_displays,
 				} ),
 			} );
 		},
 	} );
 };
 
-export const useUpdateUserMessage = () => {
+export const useAddFlowHandler = () => {
 	const queryClient = useQueryClient();
 	return useMutation( {
-		mutationFn: ( { flowStepId, message } ) =>
-			updateUserMessage( flowStepId, message ),
-		onMutate: async ( { pipelineId, flowId, flowStepId, message } ) => {
-			const patches = {
-				pipelineId,
-				flowId,
-				flowStepId,
-				patchStep: ( step ) => ( {
-					...step,
-					user_message: message,
-				} ),
-			};
-
-			const cachedFlowId = normalizeId( flowId );
-			const cachedPipelineId = normalizeId( pipelineId );
-
-			const previousSingle = cachedFlowId
-				? queryClient.getQueryData( [ 'flows', 'single', cachedFlowId ] )
-				: undefined;
-
-			const previousPaginatedQueries = cachedPipelineId
-				? queryClient.getQueriesData( {
-						queryKey: [ 'flows', cachedPipelineId ],
-						exact: false,
-				  } )
-				: [];
-
-			patchFlowStepInCache( queryClient, patches );
-
-			return { previousSingle, previousPaginatedQueries };
+		mutationFn: ( { flowStepId, handlerSlug, settings = {} } ) =>
+			addFlowHandler( flowStepId, handlerSlug, settings ),
+		onSuccess: ( response, variables ) => {
+			// Invalidate flows to pick up updated handler config shape.
+			if ( variables.pipelineId ) {
+				const cachedPipelineId = normalizeId( variables.pipelineId );
+				queryClient.invalidateQueries( {
+					queryKey: [ 'flows', cachedPipelineId ],
+				} );
+			}
+			if ( variables.flowId ) {
+				const cachedFlowId = normalizeId( variables.flowId );
+				queryClient.invalidateQueries( {
+					queryKey: [ 'flows', 'single', cachedFlowId ],
+				} );
+			}
 		},
-		onError: ( _, { pipelineId, flowId }, context ) => {
-			const cachedFlowId = normalizeId( flowId );
-			const cachedPipelineId = normalizeId( pipelineId );
+	} );
+};
 
-			if ( cachedFlowId && context?.previousSingle ) {
-				queryClient.setQueryData(
-					[ 'flows', 'single', cachedFlowId ],
-					context.previousSingle
-				);
+export const useRemoveFlowHandler = () => {
+	const queryClient = useQueryClient();
+	return useMutation( {
+		mutationFn: ( { flowStepId, handlerSlug } ) =>
+			removeFlowHandler( flowStepId, handlerSlug ),
+		onSuccess: ( response, variables ) => {
+			if ( variables.pipelineId ) {
+				const cachedPipelineId = normalizeId( variables.pipelineId );
+				queryClient.invalidateQueries( {
+					queryKey: [ 'flows', cachedPipelineId ],
+				} );
+			}
+			if ( variables.flowId ) {
+				const cachedFlowId = normalizeId( variables.flowId );
+				queryClient.invalidateQueries( {
+					queryKey: [ 'flows', 'single', cachedFlowId ],
+				} );
+			}
+		},
+	} );
+};
+
+export const useUpdateFlowStepConfig = () => {
+	const queryClient = useQueryClient();
+	return useMutation( {
+		mutationFn: ( { flowStepId, config } ) =>
+			updateFlowStepConfig( flowStepId, config ),
+		onSuccess: ( response, variables ) => {
+			if ( ! response?.success ) {
+				return;
 			}
 
-			if ( cachedPipelineId && context?.previousPaginatedQueries?.length ) {
-				context.previousPaginatedQueries.forEach( ( [ queryKey, data ] ) => {
-					queryClient.setQueryData( queryKey, data );
+			// Invalidate flow queries to pick up updated config.
+			if ( variables.pipelineId ) {
+				const cachedPipelineId = normalizeId( variables.pipelineId );
+				queryClient.invalidateQueries( {
+					queryKey: [ 'flows', cachedPipelineId ],
+				} );
+			}
+			if ( variables.flowId ) {
+				const cachedFlowId = normalizeId( variables.flowId );
+				queryClient.invalidateQueries( {
+					queryKey: [ 'flows', 'single', cachedFlowId ],
 				} );
 			}
 		},
@@ -377,6 +414,40 @@ export const useUpdateFlowSchedule = () => {
 			}
 
 			setFlowInCache( queryClient, response.data );
+		},
+	} );
+};
+
+// Flow Memory Files
+export const useFlowMemoryFiles = ( flowId ) =>
+	useQuery( {
+		queryKey: [ 'flow-memory-files', flowId ],
+		queryFn: async () => {
+			const response = await fetchFlowMemoryFiles( flowId );
+			if ( response.success && response.data ) {
+				// Current REST shape: { memory_files: [...] }
+				if ( typeof response.data === 'object' && ! Array.isArray( response.data ) ) {
+					return {
+						memoryFiles: response.data.memory_files || [],
+					};
+				}
+				// Backward compat: old shape was a bare array.
+				return { memoryFiles: response.data };
+			}
+			return { memoryFiles: [] };
+		},
+		enabled: !! flowId,
+	} );
+
+export const useUpdateFlowMemoryFiles = ( flowId ) => {
+	const queryClient = useQueryClient();
+	return useMutation( {
+		mutationFn: ( { memoryFiles } ) =>
+			updateFlowMemoryFiles( flowId, memoryFiles ),
+		onSuccess: () => {
+			queryClient.invalidateQueries( {
+				queryKey: [ 'flow-memory-files', flowId ],
+			} );
 		},
 	} );
 };

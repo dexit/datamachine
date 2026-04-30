@@ -4,18 +4,24 @@
  * Reusable table with checkbox selection for pipelines.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { CheckboxControl } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import { isSameId, includesId, normalizeId } from '../../../utils/ids';
 
 /**
  * Pipeline Checkbox Table Component
  *
- * @param {Object} props - Component props
- * @param {Array} props.pipelines - All available pipelines
- * @param {Array} props.selectedIds - Currently selected pipeline IDs
+ * @param {Object}   props                   - Component props
+ * @param {Array}    props.pipelines         - All available pipelines
+ * @param {Array}    props.selectedIds       - Currently selected pipeline IDs
  * @param {Function} props.onSelectionChange - Selection change handler
- * @returns {React.ReactElement} Pipeline checkbox table
+ * @return {React.ReactElement} Pipeline checkbox table
  */
 export default function PipelineCheckboxTable( {
 	pipelines,
@@ -24,6 +30,7 @@ export default function PipelineCheckboxTable( {
 } ) {
 	/**
 	 * Toggle individual pipeline selection
+	 * @param pipelineId
 	 */
 	const togglePipeline = ( pipelineId ) => {
 		const normalizedId = normalizeId( pipelineId );
@@ -41,7 +48,9 @@ export default function PipelineCheckboxTable( {
 		if ( selectedIds.length === pipelines.length ) {
 			onSelectionChange( [] );
 		} else {
-			onSelectionChange( pipelines.map( ( p ) => normalizeId( p.pipeline_id ) ) );
+			onSelectionChange(
+				pipelines.map( ( p ) => normalizeId( p.pipeline_id ) )
+			);
 		}
 	};
 
@@ -63,14 +72,12 @@ export default function PipelineCheckboxTable( {
 								__nextHasNoMarginBottom
 							/>
 						</th>
-						<th>
-							{ __( 'Pipeline Name', 'datamachine' ) }
+						<th>{ __( 'Pipeline Name', 'data-machine' ) }</th>
+						<th className="datamachine-table-col--100">
+							{ __( 'Steps', 'data-machine' ) }
 						</th>
 						<th className="datamachine-table-col--100">
-							{ __( 'Steps', 'datamachine' ) }
-						</th>
-						<th className="datamachine-table-col--100">
-							{ __( 'Flows', 'datamachine' ) }
+							{ __( 'Flows', 'data-machine' ) }
 						</th>
 					</tr>
 				</thead>
@@ -83,7 +90,7 @@ export default function PipelineCheckboxTable( {
 							>
 								{ __(
 									'No pipelines available',
-									'datamachine'
+									'data-machine'
 								) }
 							</td>
 						</tr>
@@ -93,7 +100,12 @@ export default function PipelineCheckboxTable( {
 						const stepCount = Object.keys(
 							pipeline.pipeline_config || {}
 						).length;
-						const flowCount = pipeline.flows?.length || 0;
+						// Prefer the lightweight flow_count field exposed by the
+						// /pipelines list endpoint. Fall back to counting an
+						// embedded flows array (include_flows=true responses)
+						// for back-compat.
+						const flowCount =
+							pipeline.flow_count ?? pipeline.flows?.length ?? 0;
 						const isSelected = includesId(
 							selectedIds,
 							pipeline.pipeline_id
@@ -104,7 +116,10 @@ export default function PipelineCheckboxTable( {
 							: 'datamachine-pipeline-table-row';
 
 						return (
-							<tr key={ pipeline.pipeline_id } className={ rowClass }>
+							<tr
+								key={ pipeline.pipeline_id }
+								className={ rowClass }
+							>
 								<td>
 									<CheckboxControl
 										checked={ isSelected }

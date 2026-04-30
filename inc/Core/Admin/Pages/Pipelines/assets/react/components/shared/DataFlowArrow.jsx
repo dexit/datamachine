@@ -7,11 +7,11 @@
 /**
  * Data Flow Arrow Component
  *
- * @returns {React.ReactElement} Arrow SVG
+ * @return {React.ReactElement} Arrow SVG
  */
 export default function DataFlowArrow() {
-		return (
-			<div className="datamachine-data-flow-arrow">
+	return (
+		<div className="datamachine-data-flow-arrow">
 			<svg
 				width="40"
 				height="20"

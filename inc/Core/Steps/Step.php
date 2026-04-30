@@ -6,252 +6,313 @@
  * and exception handling across all step implementations.
  *
  * @package DataMachine\Core\Steps
- * @since 0.2.1
+ * @since   0.2.1
  */
 
 namespace DataMachine\Core\Steps;
 
+use DataMachine\Core\DataPacket;
 use DataMachine\Core\EngineData;
 
-if (!defined('ABSPATH')) {
-    exit;
+if ( ! defined('ABSPATH') ) {
+	exit;
 }
 
 abstract class Step {
 
-    /**
-     * Step type identifier.
-     *
-     * @var string
-     */
-    protected string $step_type;
 
-    /**
-     * Job ID from payload.
-     *
-     * @var int
-     */
-    protected int $job_id;
+	/**
+	 * Step type identifier.
+	 *
+	 * @var string
+	 */
+	protected string $step_type;
 
-    /**
-     * Flow step ID from payload.
-     *
-     * @var string
-     */
-    protected string $flow_step_id;
+	/**
+	 * Job ID from payload.
+	 *
+	 * @var int
+	 */
+	protected int $job_id;
 
-    /**
-     * Data packets array from payload.
-     *
-     * @var array
-     */
-    protected array $dataPackets;
+	/**
+	 * Flow step ID from payload.
+	 *
+	 * @var string
+	 */
+	protected string $flow_step_id;
 
-    /**
-     * Flow step configuration from payload.
-     *
-     * @var array
-     */
-    protected array $flow_step_config;
+	/**
+	 * Data packets array from payload.
+	 *
+	 * @var array
+	 */
+	protected array $dataPackets;
 
-    /**
-     * Engine data loaded from centralized storage.
-     *
-     * @var array
-     */
-    protected array $engine_data = [];
+	/**
+	 * Flow step configuration from payload.
+	 *
+	 * @var array
+	 */
+	protected array $flow_step_config;
 
-    /**
-     * Engine snapshot helper.
-     */
-    protected EngineData $engine;
+	/**
+	 * Engine data loaded from centralized storage.
+	 *
+	 * @var array
+	 */
+	protected array $engine_data = array();
 
-    /**
-     * Initialize step with type identifier.
-     *
-     * @param string $step_type Step type identifier (fetch, ai, publish, update)
-     */
-    public function __construct(string $step_type) {
-        $this->step_type = $step_type;
-    }
+	/**
+	 * Engine snapshot helper.
+	 */
+	protected EngineData $engine;
 
-    /**
-     * Execute step with unified payload handling.
-     *
-    * @param array $payload Unified step payload (job_id, flow_step_id, data, flow_step_config)
-     * @return array Updated data packet array
-     */
-    public function execute(array $payload): array {
-        try {
-            // Destructure payload to properties
-            $this->destructurePayload($payload);
+	/**
+	 * Initialize step with type identifier.
+	 *
+	 * @param string $step_type Step type identifier (fetch, ai, publish, upsert)
+	 */
+	public function __construct( string $step_type ) {
+		$this->step_type = $step_type;
+	}
 
+	/**
+	 * Execute step with unified payload handling.
+	 *
+	 * @param  array $payload Unified step payload (job_id, flow_step_id, data, flow_step_config)
+	 * @return array Updated data packet array
+	 */
+	public function execute( array $payload ): array {
+		try {
+			// Destructure payload to properties
+			$this->destructurePayload($payload);
 
+			// Validate common configuration
+			if ( ! $this->validateCommonConfiguration() ) {
+				return $this->dataPackets;
+			}
 
-            // Validate common configuration
-            if (!$this->validateCommonConfiguration()) {
-                return $this->dataPackets;
-            }
+			// Validate step-specific configuration
+			if ( ! $this->validateStepConfiguration() ) {
+				return $this->dataPackets;
+			}
 
-            // Validate step-specific configuration
-            if (!$this->validateStepConfiguration()) {
-                return $this->dataPackets;
-            }
+			// Execute step-specific logic
+			return $this->executeStep();
+		} catch ( \Exception $e ) {
+			return $this->handleException($e);
+		}
+	}
 
-            // Execute step-specific logic
-            return $this->executeStep();
+	/**
+	 * Execute step-specific logic.
+	 * Called after payload destructuring and common validation.
+	 *
+	 * @return array Updated data packet array
+	 */
+	abstract protected function executeStep(): array;
 
-        } catch (\Exception $e) {
-            return $this->handleException($e);
-        }
-    }
+	/**
+	 * Validate step-specific configuration requirements.
+	 * Default implementation checks for handler_slug. Override for custom validation.
+	 *
+	 * @return bool True if configuration is valid, false otherwise
+	 */
+	protected function validateStepConfiguration(): bool {
+		$handler = $this->getHandlerSlug();
 
-    /**
-     * Execute step-specific logic.
-     * Called after payload destructuring and common validation.
-     *
-     * @return array Updated data packet array
-     */
-    abstract protected function executeStep(): array;
+		if ( empty($handler) ) {
+			$this->logConfigurationError(
+				'Step requires handler configuration',
+				array(
+					'available_flow_step_config' => array_keys($this->flow_step_config),
+				)
+			);
+			return false;
+		}
 
-    /**
-     * Validate step-specific configuration requirements.
-     * Default implementation checks for handler_slug. Override for custom validation.
-     *
-     * @return bool True if configuration is valid, false otherwise
-     */
-    protected function validateStepConfiguration(): bool {
-        $handler = $this->getHandlerSlug();
+		return true;
+	}
 
-        if (empty($handler)) {
-            $this->logConfigurationError('Step requires handler configuration', [
-                'available_flow_step_config' => array_keys($this->flow_step_config)
-            ]);
-            return false;
-        }
+	/**
+	 * Extract and store payload fields to class properties.
+	 *
+	 * @param  array $payload Unified step payload
+	 * @return void
+	 */
+	protected function destructurePayload( array $payload ): void {
+		if ( ! isset($payload['job_id']) || empty($payload['job_id']) ) {
+			throw new \InvalidArgumentException('Job ID is required in step payload');
+		}
+		if ( ! isset($payload['flow_step_id']) || empty($payload['flow_step_id']) ) {
+			throw new \InvalidArgumentException('Flow step ID is required in step payload');
+		}
 
-        return true;
-    }
+		$this->job_id       = $payload['job_id'];
+		$this->flow_step_id = $payload['flow_step_id'];
+		$this->dataPackets  = is_array($payload['data'] ?? null) ? $payload['data'] : array();
+		$engine             = $payload['engine'] ?? null;
+		if ( ! $engine instanceof EngineData ) {
+			$engine = new EngineData(datamachine_get_engine_data($this->job_id), $this->job_id);
+		}
 
-    /**
-     * Extract and store payload fields to class properties.
-     *
-     * @param array $payload Unified step payload
-     * @return void
-     */
-    protected function destructurePayload(array $payload): void {
-        if (!isset($payload['job_id']) || empty($payload['job_id'])) {
-            throw new \InvalidArgumentException('Job ID is required in step payload');
-        }
-        if (!isset($payload['flow_step_id']) || empty($payload['flow_step_id'])) {
-            throw new \InvalidArgumentException('Flow step ID is required in step payload');
-        }
+		$this->engine           = $engine;
+		$this->engine_data      = $engine->all();
+		$this->flow_step_config = $engine->getFlowStepConfig($this->flow_step_id);
 
-        $this->job_id = $payload['job_id'];
-        $this->flow_step_id = $payload['flow_step_id'];
-        $this->dataPackets = is_array($payload['data'] ?? null) ? $payload['data'] : [];
-        $engine = $payload['engine'] ?? null;
-        if (!$engine instanceof EngineData) {
-            $engine = new EngineData(datamachine_get_engine_data($this->job_id), $this->job_id);
-        }
+		if ( empty($this->flow_step_config) ) {
+			throw new \RuntimeException('Flow step configuration missing from engine snapshot');
+		}
+	}
 
-        $this->engine = $engine;
-        $this->engine_data = $engine->all();
-        $this->flow_step_config = $engine->getFlowStepConfig($this->flow_step_id);
+	/**
+	 * Centralized logging with consistent context.
+	 *
+	 * Automatically includes job_id, pipeline_id, and flow_id from engine context
+	 * to ensure all step logs can be filtered and queried effectively.
+	 *
+	 * @param  string $level   Log level (debug, info, warning, error)
+	 * @param  string $message Log message
+	 * @param  array  $context Additional context data
+	 * @return void
+	 */
+	protected function log( string $level, string $message, array $context = array() ): void {
+		$job_context = $this->engine->getJobContext();
 
-        if (empty($this->flow_step_config)) {
-            throw new \RuntimeException('Flow step configuration missing from engine snapshot');
-        }
-    }
+		$full_context = array_merge(
+			array(
+				'flow_step_id' => $this->flow_step_id,
+				'step_type'    => $this->step_type,
+				'job_id'       => $job_context['job_id'] ?? $this->job_id,
+				'pipeline_id'  => $job_context['pipeline_id'] ?? null,
+				'flow_id'      => $job_context['flow_id'] ?? null,
+			),
+			$context
+		);
 
-    /**
-     * Centralized logging with consistent context.
-     *
-     * Automatically includes job_id, pipeline_id, and flow_id from engine context
-     * to ensure all step logs can be filtered and queried effectively.
-     *
-     * @param string $level Log level (debug, info, warning, error)
-     * @param string $message Log message
-     * @param array $context Additional context data
-     * @return void
-     */
-    protected function log(string $level, string $message, array $context = []): void {
-        $job_context = $this->engine->getJobContext();
+		// Remove null values to keep logs clean
+		$full_context = array_filter($full_context, fn( $v ) => null !== $v);
 
-        $full_context = array_merge([
-            'flow_step_id' => $this->flow_step_id,
-            'step_type' => $this->step_type,
-            'job_id' => $job_context['job_id'] ?? $this->job_id,
-            'pipeline_id' => $job_context['pipeline_id'] ?? null,
-            'flow_id' => $job_context['flow_id'] ?? null
-        ], $context);
-
-        // Remove null values to keep logs clean
-        $full_context = array_filter($full_context, fn($v) => $v !== null);
-
-        do_action('datamachine_log', $level, $message, $full_context);
-    }
-
-
-
-    /**
-     * Log configuration errors with consistent formatting.
-     *
-     * @param string $message Error message
-     * @param array $additional_context Additional context beyond flow_step_id
-     * @return void
-     */
-    protected function logConfigurationError(string $message, array $additional_context = []): void {
-        $this->log('error', $this->step_type . ': ' . $message, $additional_context);
-    }
+		do_action('datamachine_log', $level, $message, $full_context);
+	}
 
 
 
-    /**
-     * Get handler slug from flow step configuration.
-     *
-     * @return string|null Handler slug or null if not set
-     */
-    protected function getHandlerSlug(): ?string {
-        return $this->flow_step_config['handler_slug'] ?? null;
-    }
+	/**
+	 * Log configuration errors with consistent formatting.
+	 *
+	 * @param  string $message            Error message
+	 * @param  array  $additional_context Additional context beyond flow_step_id
+	 * @return void
+	 */
+	protected function logConfigurationError( string $message, array $additional_context = array() ): void {
+		$this->log('error', $this->step_type . ': ' . $message, $additional_context);
+	}
 
-    /**
-     * Get handler configuration from flow step configuration.
-     *
-     * @return array Handler configuration array
-     */
-    protected function getHandlerConfig(): array {
-        return $this->flow_step_config['handler_config'] ?? [];
-    }
 
-    /**
-     * Handle exceptions with consistent logging and data packet return.
-     *
-     * @param \Exception $e Exception instance
-     * @param string $context Context where exception occurred
-     * @return array Data packet array (unchanged on exception)
-     */
-    protected function handleException(\Exception $e, string $context = 'execution'): array {
-        $this->log('error', $this->step_type . ': Exception during ' . $context, [
-            'exception' => $e->getMessage(),
-            'trace' => $e->getTraceAsString()
-        ]);
 
-        return $this->dataPackets;
-    }
+	/**
+	 * Get the primary handler slug from flow step configuration.
+	 *
+	 * Reads the canonical scalar `handler_slug` field. Multi-handler steps
+	 * should call getHandlerSlugs(); handler-free steps return null.
+	 *
+	 * @return string|null Handler slug or null if not set
+	 */
+	protected function getHandlerSlug(): ?string {
+		return FlowStepConfig::getHandlerSlug( $this->flow_step_config );
+	}
 
-    /**
-     * Validate common configuration requirements shared by all steps.
-     *
-     * @return bool True if common validation passes, false otherwise
-     */
-    protected function validateCommonConfiguration(): bool {
-        if (empty($this->flow_step_config)) {
-            $this->logConfigurationError('No step configuration provided');
-            return false;
-        }
+	/**
+	 * Get the primary handler configuration from flow step configuration.
+	 *
+	 * Reads the canonical config slot: `handler_config` for handler-free and
+	 * single-handler steps, or `handler_configs[primary_slug]` for true
+	 * multi-handler steps.
+	 *
+	 * @return array Handler configuration array
+	 */
+	protected function getHandlerConfig(): array {
+		return FlowStepConfig::getPrimaryHandlerConfig( $this->flow_step_config );
+	}
 
-        return true;
-    }
+	/**
+	 * Get handler slugs for multi-handler steps.
+	 *
+	 * @return array Handler slug array
+	 */
+	protected function getHandlerSlugs(): array {
+		return FlowStepConfig::getHandlerSlugs( $this->flow_step_config );
+	}
+
+	/**
+	 * Get handler configs keyed by handler slug.
+	 *
+	 * @return array<string, array> Handler configs keyed by slug
+	 */
+	protected function getHandlerConfigs(): array {
+		return FlowStepConfig::getHandlerConfigs( $this->flow_step_config );
+	}
+
+	/**
+	 * Handle exceptions with consistent logging and failure packet return.
+	 *
+	 * @param  \Exception $e       Exception instance
+	 * @param  string     $context Context where exception occurred
+	 * @return array Data packet array with an explicit failure packet
+	 */
+	protected function handleException( \Exception $e, string $context = 'execution' ): array {
+		$this->log(
+			'error',
+			$this->step_type . ': Exception during ' . $context,
+			array(
+				'exception' => $e->getMessage(),
+				'trace'     => $e->getTraceAsString(),
+			)
+		);
+
+		return $this->buildExceptionFailurePackets( $e, $context, 'step_exception' );
+	}
+
+	/**
+	 * Build a data packet that makes step exceptions explicit to the engine.
+	 *
+	 * @param \Exception $e Exception instance.
+	 * @param string     $context Exception context.
+	 * @param string     $failure_reason Machine-readable failure reason.
+	 * @return array Data packet array with the failure packet prepended.
+	 */
+	protected function buildExceptionFailurePackets( \Exception $e, string $context, string $failure_reason ): array {
+		$packet = new DataPacket(
+			array(
+				'body'              => $e->getMessage(),
+				'exception_context' => $context,
+				'exception_class'   => get_class( $e ),
+			),
+			array(
+				'step_type'      => $this->step_type,
+				'flow_step_id'   => $this->flow_step_id,
+				'success'        => false,
+				'failure_reason' => $failure_reason,
+			),
+			'step_error'
+		);
+
+		return $packet->addTo( $this->dataPackets );
+	}
+
+	/**
+	 * Validate common configuration requirements shared by all steps.
+	 *
+	 * @return bool True if common validation passes, false otherwise
+	 */
+	protected function validateCommonConfiguration(): bool {
+		if ( empty($this->flow_step_config) ) {
+			$this->logConfigurationError('No step configuration provided');
+			return false;
+		}
+
+		return true;
+	}
 }

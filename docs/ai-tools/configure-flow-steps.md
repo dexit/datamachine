@@ -15,13 +15,13 @@ The `configure_flow_steps` tool enables configuration of flow steps after creati
 |-----------|------|----------|-------------|
 | `flow_step_id` | string | No* | Flow step ID for single-step mode |
 | `pipeline_id` | integer | No* | Pipeline ID for bulk mode |
-| `step_type` | string | No** | Filter by step type (fetch, publish, update, ai) |
+| `step_type` | string | No** | Filter by step type (fetch, publish, upsert, ai) |
 | `handler_slug` | string | No | Handler slug to set (single) or filter by (bulk) |
 | `target_handler_slug` | string | No | Handler to switch TO. When provided, `handler_slug` filters existing handlers (bulk) and `target_handler_slug` sets the new handler. |
 | `field_map` | object | No | Field mappings when switching handlers, e.g. `{"endpoint_url": "source_url"}`. |
 | `handler_config` | object | No*** | Handler config to merge into existing config |
 | `flow_configs` | array | No | Per-flow configurations for bulk mode. Array of `{flow_id: int, handler_config: object}`. |
-| `user_message` | string | No*** | User message/prompt for AI steps |
+| `user_message` | string | No*** | User message input for AI steps. Stored as a one-entry static `prompt_queue`. |
 
 **Validation Rules:**
 - *One of `flow_step_id` OR `pipeline_id` required
@@ -136,6 +136,8 @@ In this example, all matching steps get `timeframe_limit: "24_hours"`, but each 
   "user_message": "Summarize the content in 2-3 sentences"
 }
 ```
+
+`user_message` is an input convenience, not a persisted flow-step field. The ability writes it through the same path as `wp datamachine flows update --set-user-message`, replacing the step's `prompt_queue` with one `{prompt, added_at}` entry and setting `queue_mode` to `static`.
 
 ## Response Format
 

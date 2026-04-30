@@ -3,7 +3,7 @@
  * Manage Logs Tool
  *
  * Dedicated tool for managing Data Machine log configuration and storage.
- * Supports clearing logs, setting log levels, and getting log metadata.
+ * Supports clearing logs and getting log metadata.
  *
  * @package DataMachine\Api\Chat\Tools
  * @since 0.8.2
@@ -11,17 +11,16 @@
 
 namespace DataMachine\Api\Chat\Tools;
 
-if (!defined('ABSPATH')) {
+if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-use DataMachine\Engine\AI\Tools\ToolRegistrationTrait;
+use DataMachine\Engine\AI\Tools\BaseTool;
 
-class ManageLogs {
-	use ToolRegistrationTrait;
+class ManageLogs extends BaseTool {
 
 	public function __construct() {
-		$this->registerTool('chat', 'manage_logs', [$this, 'getToolDefinition']);
+		$this->registerTool( 'manage_logs', array( $this, 'getToolDefinition' ), array( 'chat' ), array( 'abilities' => array( 'datamachine/clear-logs', 'datamachine/get-log-metadata' ) ) );
 	}
 
 	/**
@@ -30,28 +29,28 @@ class ManageLogs {
 	 * @return array Tool definition array
 	 */
 	public function getToolDefinition(): array {
-		return [
-			'class' => self::class,
-			'method' => 'handle_tool_call',
+		return array(
+			'class'       => self::class,
+			'method'      => 'handle_tool_call',
 			'description' => $this->buildDescription(),
-			'parameters' => [
-				'action' => [
-					'type' => 'string',
-					'required' => true,
-					'description' => 'Action to perform: "clear", "set_level", or "get_metadata"'
-				],
-				'agent_type' => [
-					'type' => 'string',
-					'required' => false,
-					'description' => 'Agent type: "pipeline", "chat", or "all" (for clear action). Defaults to "pipeline"'
-				],
-				'level' => [
-					'type' => 'string',
-					'required' => false,
-					'description' => 'Log level for set_level action: "debug", "info", "warning", "error", "none"'
-				]
-			]
-		];
+			'parameters'  => array(
+				'action'   => array(
+					'type'        => 'string',
+					'required'    => true,
+					'description' => 'Action to perform: "clear" or "get_metadata"',
+				),
+				'agent_id' => array(
+					'type'        => 'integer',
+					'required'    => false,
+					'description' => 'Agent ID to target. Omit to target all logs.',
+				),
+				'context'  => array(
+					'type'        => 'string',
+					'required'    => false,
+					'description' => 'Deprecated label only. Use agent_id instead.',
+				),
+			),
+		);
 	}
 
 	/**
@@ -60,24 +59,15 @@ class ManageLogs {
 	 * @return string Tool description
 	 */
 	private function buildDescription(): string {
-		return 'Manage Data Machine log configuration and storage.
+		return 'Manage Data Machine logs.
 
 ACTIONS:
-- clear: Clear log file for specified agent_type (or "all" to clear all logs)
-- set_level: Set log verbosity level for specified agent_type
-- get_metadata: Get log file info (size, path, current level)
+- clear: Clear logs for a specific agent_id or all logs
+- get_metadata: Get log metadata for a specific agent_id or all logs
 
-LOG LEVELS (for set_level action):
-- debug: Most verbose, includes all messages
-- info: Standard operational messages
-- warning: Warnings and errors only
-- error: Errors only
-- none: Disable logging
-
-AGENT TYPES:
-- pipeline: Job/flow execution logs
-- chat: Chat agent operation logs
-- all: All agent types (only valid for clear action)';
+NOTES:
+- Logs are scoped by explicit agent_id
+- Context names are presentation labels only and are not resolved here';
 	}
 
 	/**
@@ -87,133 +77,113 @@ AGENT TYPES:
 	 * @param array $tool_def Tool definition
 	 * @return array Tool execution result
 	 */
-	public function handle_tool_call(array $parameters, array $tool_def = []): array {
-		$action = $parameters['action'] ?? '';
-		$agent_type = $parameters['agent_type'] ?? 'pipeline';
+	public function handle_tool_call( array $parameters, array $tool_def = array() ): array {
+		$action   = $parameters['action'] ?? '';
+		$agent_id = isset( $parameters['agent_id'] ) ? (int) $parameters['agent_id'] : null;
 
-		switch ($action) {
+		switch ( $action ) {
 			case 'clear':
-				return $this->clearLogs($agent_type);
-
-			case 'set_level':
-				$level = $parameters['level'] ?? '';
-				return $this->setLevel($agent_type, $level);
+				return $this->clearLogs( $agent_id );
 
 			case 'get_metadata':
-				return $this->getMetadata($agent_type);
+				return $this->getMetadata( $agent_id );
 
 			default:
-				return [
-					'success' => false,
-					'error' => 'Invalid action. Use "clear", "set_level", or "get_metadata"',
-					'tool_name' => 'manage_logs'
-				];
+				return array(
+					'success'   => false,
+					'error'     => 'Invalid action. Use "clear" or "get_metadata"',
+					'tool_name' => 'manage_logs',
+				);
 		}
 	}
 
 	/**
-	 * Clear logs for specified agent type.
+	 * Clear logs for a specific agent or all agents.
 	 *
-	 * @param string $agent_type Agent type to clear
+	 * @param int|null $agent_id Agent ID to clear, or null for all logs.
 	 * @return array Result
 	 */
-	private function clearLogs(string $agent_type): array {
-		$request = new \WP_REST_Request('DELETE', '/datamachine/v1/logs');
-		$request->set_query_params(['agent_type' => $agent_type]);
-
-		$response = rest_do_request($request);
-		$data = $response->get_data();
-		$status = $response->get_status();
-
-		if ($status >= 400) {
-			return [
-				'success' => false,
-				'error' => $data['message'] ?? 'Failed to clear logs',
-				'tool_name' => 'manage_logs'
-			];
+	private function clearLogs( ?int $agent_id ): array {
+		$ability = wp_get_ability( 'datamachine/clear-logs' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Clear logs ability not available',
+				'tool_name' => 'manage_logs',
+			);
 		}
 
-		return [
-			'success' => true,
-			'data' => ['message' => $data['message'] ?? 'Logs cleared'],
-			'tool_name' => 'manage_logs'
-		];
+		$result = $ability->execute(
+			null !== $agent_id && $agent_id > 0
+				? array( 'agent_id' => $agent_id )
+				: array()
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'manage_logs',
+			);
+		}
+
+		if ( ! ( $result['success'] ?? false ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result['error'] ?? $result['message'] ?? 'Failed to clear logs',
+				'tool_name' => 'manage_logs',
+			);
+		}
+
+		return array(
+			'success'   => true,
+			'data'      => array( 'message' => $result['message'] ?? 'Logs cleared' ),
+			'tool_name' => 'manage_logs',
+		);
 	}
 
 	/**
-	 * Set log level for specified agent type.
+	 * Get log metadata for a specific agent or all agents.
 	 *
-	 * @param string $agent_type Agent type
-	 * @param string $level Log level to set
+	 * @param int|null $agent_id Agent ID, or null for all logs.
 	 * @return array Result
 	 */
-	private function setLevel(string $agent_type, string $level): array {
-		if (empty($level)) {
-			return [
-				'success' => false,
-				'error' => 'level parameter is required for set_level action',
-				'tool_name' => 'manage_logs'
-			];
+	private function getMetadata( ?int $agent_id ): array {
+		$ability = wp_get_ability( 'datamachine/get-log-metadata' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Get log metadata ability not available',
+				'tool_name' => 'manage_logs',
+			);
 		}
 
-		$request = new \WP_REST_Request('PUT', '/datamachine/v1/logs/level');
-		$request->set_body_params([
-			'agent_type' => $agent_type,
-			'level' => $level
-		]);
+		$result = $ability->execute(
+			null !== $agent_id && $agent_id > 0
+				? array( 'agent_id' => $agent_id )
+				: array()
+		);
 
-		$response = rest_do_request($request);
-		$data = $response->get_data();
-		$status = $response->get_status();
-
-		if ($status >= 400) {
-			return [
-				'success' => false,
-				'error' => $data['message'] ?? 'Failed to set log level',
-				'tool_name' => 'manage_logs'
-			];
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'manage_logs',
+			);
 		}
 
-		return [
-			'success' => true,
-			'data' => [
-				'agent_type' => $agent_type,
-				'level' => $level,
-				'message' => $data['message'] ?? 'Log level updated'
-			],
-			'tool_name' => 'manage_logs'
-		];
-	}
-
-	/**
-	 * Get log metadata for specified agent type.
-	 *
-	 * @param string $agent_type Agent type (or 'all' for all types)
-	 * @return array Result
-	 */
-	private function getMetadata(string $agent_type): array {
-		$request = new \WP_REST_Request('GET', '/datamachine/v1/logs');
-
-		if ($agent_type !== 'all') {
-			$request->set_query_params(['agent_type' => $agent_type]);
+		if ( ! ( $result['success'] ?? false ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result['error'] ?? $result['message'] ?? 'Failed to get log metadata',
+				'tool_name' => 'manage_logs',
+			);
 		}
 
-		$response = rest_do_request($request);
-		$data = $response->get_data();
-		$status = $response->get_status();
-
-		if ($status >= 400) {
-			return [
-				'success' => false,
-				'error' => $data['message'] ?? 'Failed to get log metadata',
-				'tool_name' => 'manage_logs'
-			];
-		}
-
-		return [
-			'success' => true,
-			'data' => $data,
-			'tool_name' => 'manage_logs'
-		];
+		return array(
+			'success'   => true,
+			'data'      => $result,
+			'tool_name' => 'manage_logs',
+		);
 	}
 }

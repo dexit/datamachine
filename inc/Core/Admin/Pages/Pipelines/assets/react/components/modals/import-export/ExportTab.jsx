@@ -4,9 +4,15 @@
  * Pipeline selection table with CSV export functionality.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { useState } from '@wordpress/element';
 import { Button, Notice } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import { exportPipelines } from '../../../utils/api';
 import { useAsyncOperation } from '../../../hooks/useFormState';
 import PipelineCheckboxTable from './PipelineCheckboxTable';
@@ -14,10 +20,10 @@ import PipelineCheckboxTable from './PipelineCheckboxTable';
 /**
  * Export Tab Component
  *
- * @param {Object} props - Component props
- * @param {Array} props.pipelines - All available pipelines
- * @param {Function} props.onClose - Close handler
- * @returns {React.ReactElement} Export tab
+ * @param {Object}   props           - Component props
+ * @param {Array}    props.pipelines - All available pipelines
+ * @param {Function} props.onClose   - Close handler
+ * @return {React.ReactElement} Export tab
  */
 export default function ExportTab( { pipelines, onClose } ) {
 	const [ selectedIds, setSelectedIds ] = useState( [] );
@@ -32,13 +38,13 @@ export default function ExportTab( { pipelines, onClose } ) {
 			exportOperation.setError(
 				__(
 					'Please select at least one pipeline to export.',
-					'datamachine'
+					'data-machine'
 				)
 			);
 			return;
 		}
 
-		exportOperation.execute(async () => {
+		exportOperation.execute( async () => {
 			const response = await exportPipelines( selectedIds );
 
 			if ( response.success && response.data.csv_content ) {
@@ -56,14 +62,13 @@ export default function ExportTab( { pipelines, onClose } ) {
 				URL.revokeObjectURL( url );
 
 				setSelectedIds( [] );
-				return __( 'Pipelines exported successfully!', 'datamachine' );
-			} else {
-				throw new Error(
-					response.message ||
-						__( 'Failed to export pipelines', 'datamachine' )
-				);
+				return __( 'Pipelines exported successfully!', 'data-machine' );
 			}
-		});
+			throw new Error(
+				response.message ||
+					__( 'Failed to export pipelines', 'data-machine' )
+			);
+		} );
 	};
 
 	return (
@@ -91,7 +96,7 @@ export default function ExportTab( { pipelines, onClose } ) {
 			<p className="datamachine-import-export-description">
 				{ __(
 					'Select the pipelines you want to export to CSV:',
-					'datamachine'
+					'data-machine'
 				) }
 			</p>
 
@@ -107,18 +112,20 @@ export default function ExportTab( { pipelines, onClose } ) {
 					onClick={ onClose }
 					disabled={ exportOperation.isLoading }
 				>
-					{ __( 'Cancel', 'datamachine' ) }
+					{ __( 'Cancel', 'data-machine' ) }
 				</Button>
 
 				<Button
 					variant="primary"
 					onClick={ handleExport }
-					disabled={ exportOperation.isLoading || selectedIds.length === 0 }
+					disabled={
+						exportOperation.isLoading || selectedIds.length === 0
+					}
 					isBusy={ exportOperation.isLoading }
 				>
 					{ exportOperation.isLoading
-						? __( 'Exporting...', 'datamachine' )
-						: __( 'Export Selected', 'datamachine' ) }
+						? __( 'Exporting…', 'data-machine' )
+						: __( 'Export Selected', 'data-machine' ) }
 				</Button>
 			</div>
 		</div>

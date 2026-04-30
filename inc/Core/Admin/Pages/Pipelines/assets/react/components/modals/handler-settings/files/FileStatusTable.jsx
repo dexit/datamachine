@@ -4,33 +4,39 @@
  * Table displaying uploaded files with processing status indicators.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { __ } from '@wordpress/i18n';
 
 /**
  * File Status Table Component
  *
- * @param {Object} props - Component props
- * @param {Array} props.files - Array of file objects with status
- * @returns {React.ReactElement} File status table
+ * @param {Object} props       - Component props
+ * @param {Array}  props.files - Array of file objects with status
+ * @return {React.ReactElement} File status table
  */
 export default function FileStatusTable( { files = [] } ) {
 	/**
 	 * Get status badge
+	 * @param status
 	 */
 	const getStatusBadge = ( status ) => {
 		const statusConfig = {
 			processed: {
-				label: __( 'Processed', 'datamachine' ),
+				label: __( 'Processed', 'data-machine' ),
 				icon: '✓',
 			},
 			pending: {
-				label: __( 'Pending', 'datamachine' ),
+				label: __( 'Pending', 'data-machine' ),
 				icon: '●',
 			},
 		};
 
 		const config = statusConfig[ status ] || statusConfig.pending;
-		const className = `datamachine-status-badge datamachine-status-badge--${ status || 'pending' }`;
+		const className = `datamachine-status-badge datamachine-status-badge--${
+			status || 'pending'
+		}`;
 
 		return (
 			<span className={ className }>
@@ -44,7 +50,7 @@ export default function FileStatusTable( { files = [] } ) {
 		return (
 			<div className="datamachine-modal-empty-state datamachine-modal-empty-state--bordered">
 				<p className="datamachine-text--margin-reset">
-					{ __( 'No files uploaded yet.', 'datamachine' ) }
+					{ __( 'No files uploaded yet.', 'data-machine' ) }
 				</p>
 			</div>
 		);
@@ -55,9 +61,9 @@ export default function FileStatusTable( { files = [] } ) {
 			<table className="datamachine-pipeline-table">
 				<thead>
 					<tr className="datamachine-table-sticky-header">
-						<th>{ __( 'File Name', 'datamachine' ) }</th>
+						<th>{ __( 'File Name', 'data-machine' ) }</th>
 						<th className="datamachine-table-cell--center datamachine-table-col--compact">
-							{ __( 'Status', 'datamachine' ) }
+							{ __( 'Status', 'data-machine' ) }
 						</th>
 					</tr>
 				</thead>

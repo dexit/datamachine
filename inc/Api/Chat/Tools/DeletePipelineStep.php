@@ -3,23 +3,23 @@
  * Delete Pipeline Step Tool
  *
  * Focused tool for removing steps from pipelines.
+ * Delegates to Abilities API for core logic.
  *
  * @package DataMachine\Api\Chat\Tools
  */
 
 namespace DataMachine\Api\Chat\Tools;
 
-if (!defined('ABSPATH')) {
+if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-use DataMachine\Engine\AI\Tools\ToolRegistrationTrait;
+use DataMachine\Engine\AI\Tools\BaseTool;
 
-class DeletePipelineStep {
-	use ToolRegistrationTrait;
+class DeletePipelineStep extends BaseTool {
 
 	public function __construct() {
-		$this->registerTool('chat', 'delete_pipeline_step', [$this, 'getToolDefinition']);
+		$this->registerTool( 'delete_pipeline_step', array( $this, 'getToolDefinition' ), array( 'chat' ), array( 'ability' => 'datamachine/delete-pipeline-step' ) );
 	}
 
 	/**
@@ -28,23 +28,23 @@ class DeletePipelineStep {
 	 * @return array Tool definition array
 	 */
 	public function getToolDefinition(): array {
-		return [
-			'class' => self::class,
-			'method' => 'handle_tool_call',
+		return array(
+			'class'       => self::class,
+			'method'      => 'handle_tool_call',
 			'description' => 'Remove a step from a pipeline. This removes the step from all flows on the pipeline.',
-			'parameters' => [
-				'pipeline_id' => [
-					'type' => 'integer',
-					'required' => true,
-					'description' => 'ID of the pipeline containing the step'
-				],
-				'pipeline_step_id' => [
-					'type' => 'string',
-					'required' => true,
-					'description' => 'ID of the pipeline step to remove'
-				]
-			]
-		];
+			'parameters'  => array(
+				'pipeline_id'      => array(
+					'type'        => 'integer',
+					'required'    => true,
+					'description' => 'ID of the pipeline containing the step',
+				),
+				'pipeline_step_id' => array(
+					'type'        => 'string',
+					'required'    => true,
+					'description' => 'ID of the pipeline step to remove',
+				),
+			),
+		);
 	}
 
 	/**
@@ -54,50 +54,30 @@ class DeletePipelineStep {
 	 * @param array $tool_def Tool definition
 	 * @return array Tool execution result
 	 */
-	public function handle_tool_call(array $parameters, array $tool_def = []): array {
-		$pipeline_id = $parameters['pipeline_id'] ?? null;
-		$pipeline_step_id = $parameters['pipeline_step_id'] ?? null;
+	public function handle_tool_call( array $parameters, array $tool_def = array() ): array {
+		$ability = wp_get_ability( 'datamachine/delete-pipeline-step' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Delete pipeline step ability not available',
+				'tool_name' => 'delete_pipeline_step',
+			);
+		}
+		$result = $ability->execute( $parameters );
 
-		if (!is_numeric($pipeline_id) || (int) $pipeline_id <= 0) {
-			return [
-				'success' => false,
-				'error' => 'pipeline_id is required and must be a positive integer',
-				'tool_name' => 'delete_pipeline_step'
-			];
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'delete_pipeline_step',
+			);
 		}
 
-		if (empty($pipeline_step_id)) {
-			return [
-				'success' => false,
-				'error' => 'pipeline_step_id is required',
-				'tool_name' => 'delete_pipeline_step'
-			];
-		}
-
-		$pipeline_id = (int) $pipeline_id;
-		$pipeline_step_id = sanitize_text_field($pipeline_step_id);
-
-		$request = new \WP_REST_Request('DELETE', '/datamachine/v1/pipelines/' . $pipeline_id . '/steps/' . $pipeline_step_id);
-		$response = rest_do_request($request);
-		$data = $response->get_data();
-		$status = $response->get_status();
-
-		if ($status >= 400) {
-			return [
-				'success' => false,
-				'error' => $data['message'] ?? 'Failed to delete pipeline step',
-				'tool_name' => 'delete_pipeline_step'
-			];
-		}
-
-		return [
-			'success' => true,
-			'data' => [
-				'pipeline_id' => $pipeline_id,
-				'pipeline_step_id' => $pipeline_step_id,
-				'message' => 'Step removed from pipeline and all associated flows.'
-			],
-			'tool_name' => 'delete_pipeline_step'
-		];
+		return array(
+			'success'   => $result['success'],
+			'data'      => $result['success'] ? $result : null,
+			'error'     => $result['error'] ?? null,
+			'tool_name' => 'delete_pipeline_step',
+		);
 	}
 }

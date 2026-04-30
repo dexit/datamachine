@@ -14,116 +14,113 @@
 
 namespace DataMachine\Core\Database\Jobs;
 
+use DataMachine\Core\Database\BaseRepository;
 use DataMachine\Core\JobStatus;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit; // Exit if accessed directly.
 }
 
-class JobsStatus {
+class JobsStatus extends BaseRepository {
 
-    /**
-     * The name of the jobs database table.
-     * @var string
-     */
-    private $table_name;
+	const TABLE_NAME = 'datamachine_jobs';
 
-    /**
-     * @var \wpdb WordPress database instance
-     */
-    private $wpdb;
-
-    /**
-     * Initialize the status component.
-     */
-    public function __construct() {
-        global $wpdb;
-        $this->wpdb = $wpdb;
-        $this->table_name = $this->wpdb->prefix . 'datamachine_jobs';
-    }
-
-    /**
-     * Update the status for a job.
-     *
-     * @param int    $job_id The job ID.
-     * @param string $status The new status (e.g., 'processing').
-     * @return bool True on success, false on failure.
-     */
-    public function start_job( int $job_id, string $status = 'processing' ): bool {
-        if ( empty( $job_id ) ) {
-            return false;
-        }
+	/**
+	 * Update the status for a job.
+	 *
+	 * @param int    $job_id The job ID.
+	 * @param string $status The new status (e.g., 'processing').
+	 * @return bool True on success, false on failure.
+	 */
+	public function start_job( int $job_id, string $status = 'processing' ): bool {
+		if ( empty( $job_id ) ) {
+			return false;
+		}
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
-        $updated = $this->wpdb->update(
-            $this->table_name,
-            [
-                'status' => $status,
-            ],
-            ['job_id' => $job_id],
-            ['%s'], // Format for data
-            ['%d']  // Format for WHERE
-        );
+		$updated = $this->wpdb->update(
+			$this->table_name,
+			array(
+				'status' => $status,
+			),
+			array( 'job_id' => $job_id ),
+			array( '%s' ), // Format for data
+			array( '%d' )  // Format for WHERE
+		);
 
-        return $updated !== false;
-    }
+		return false !== $updated;
+	}
 
-    /**
-     * Update the status and completed_at time for a job.
-     *
-     * Accepts compound statuses like "agent_skipped - reason" via JobStatus validation.
-     *
-     * @param int    $job_id The job ID.
-     * @param string $status The final status (any JobStatus final status, may be compound).
-     * @return bool True on success, false on failure.
-     */
-    public function complete_job( int $job_id, string $status ): bool {
-        // Validate using JobStatus - supports compound statuses like "agent_skipped - reason"
-        if ( empty( $job_id ) || !JobStatus::isStatusFinal( $status ) ) {
-            return false;
-        }
+	/**
+	 * Update the status and completed_at time for a job.
+	 *
+	 * Accepts compound statuses like "agent_skipped - reason" via JobStatus validation.
+	 *
+	 * @param int    $job_id The job ID.
+	 * @param string $status The final status (any JobStatus final status, may be compound).
+	 * @return bool True on success, false on failure.
+	 */
+	public function complete_job( int $job_id, string $status ): bool {
+		// Validate using JobStatus - supports compound statuses like "agent_skipped - reason"
+		if ( empty( $job_id ) || ! JobStatus::isStatusFinal( $status ) ) {
+			return false;
+		}
 
-        $update_data = [
-            'status' => $status,
-            'completed_at' => current_time( 'mysql', 1 ),
-        ];
+		// Truncate to fit varchar(255) column. Full reason is preserved in engine_data.
+		if ( strlen( $status ) > 255 ) {
+			$status = substr( $status, 0, 252 ) . '...';
+		}
+
+		$update_data = array(
+			'status'       => $status,
+			'completed_at' => current_time( 'mysql', true ),
+		);
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
-        $updated = $this->wpdb->update(
-            $this->table_name,
-            $update_data,
-            ['job_id' => $job_id],
-            ['%s', '%s'],
-            ['%d']
-        );
+		$updated = $this->wpdb->update(
+			$this->table_name,
+			$update_data,
+			array( 'job_id' => $job_id ),
+			array( '%s', '%s' ),
+			array( '%d' )
+		);
 
-        return $updated !== false;
-    }
+		if ( false !== $updated ) {
+			do_action( 'datamachine_job_complete', $job_id, $status );
+		}
 
-    /**
-     * Update job status.
-     *
-     * @param int $job_id The job ID.
-     * @param string $status The new status.
-     * @return bool True on success, false on failure.
-     */
-    public function update_job_status(int $job_id, string $status): bool {
-        
-        if (empty($job_id)) {
-            return false;
-        }
-        
-        $update_data = ['status' => $status];
-        $format = ['%s'];
+		return false !== $updated;
+	}
+
+	/**
+	 * Update job status.
+	 *
+	 * @param int    $job_id The job ID.
+	 * @param string $status The new status.
+	 * @return bool True on success, false on failure.
+	 */
+	public function update_job_status( int $job_id, string $status ): bool {
+
+		if ( empty( $job_id ) ) {
+			return false;
+		}
+
+		// Truncate to fit varchar(255) column.
+		if ( strlen( $status ) > 255 ) {
+			$status = substr( $status, 0, 252 ) . '...';
+		}
+
+		$update_data = array( 'status' => $status );
+		$format      = array( '%s' );
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
-        $updated = $this->wpdb->update(
-            $this->table_name,
-            $update_data,
-            ['job_id' => $job_id],
-            $format,
-            ['%d']
-        );
+		$updated = $this->wpdb->update(
+			$this->table_name,
+			$update_data,
+			array( 'job_id' => $job_id ),
+			$format,
+			array( '%d' )
+		);
 
-        return $updated !== false;
-    }
+		return false !== $updated;
+	}
 }

@@ -1,0 +1,763 @@
+<?php
+/**
+ * Chat Orchestrator
+ *
+ * AI conversation orchestration extracted from Chat.php. Handles the
+ * multi-step business logic for chat, continue, and ping flows:
+ * session lifecycle, conversation turn execution, and error persistence.
+ *
+ * This is intentionally NOT an ability — it coordinates multiple operations
+ * (ToolManager, AIConversationLoop, session updates) and has
+ * side effects. Composition happens here; flat primitives live in abilities.
+ *
+ * @package DataMachine\Api\Chat
+ * @since 0.31.0
+ */
+
+namespace DataMachine\Api\Chat;
+
+use DataMachine\Core\Database\Chat\ConversationStoreFactory;
+use DataMachine\Core\PluginSettings;
+use DataMachine\Engine\AI\ConversationManager;
+use DataMachine\Engine\AI\AIConversationLoop;
+use DataMachine\Engine\AI\Tools\ToolManager;
+use DataMachine\Engine\AI\Tools\ToolPolicyResolver;
+use WP_Error;
+
+defined( 'ABSPATH' ) || exit;
+
+class ChatOrchestrator {
+
+	/**
+	 * Process a new chat message.
+	 *
+	 * Handles session resolution (existing, pending dedup, or new), persists
+	 * the user message, executes the AI conversation turn, updates session
+	 * state, and triggers title generation for new sessions.
+	 *
+	 * @since 0.31.0
+	 *
+	 * @param string $message              User message text.
+	 * @param string $provider             AI provider identifier.
+	 * @param string $model                AI model identifier.
+	 * @param int    $user_id              Current user ID.
+	 * @param array  $options {
+	 *     Optional settings.
+	 *
+	 *     @type string $session_id           Existing session ID to continue.
+	 *     @type int    $selected_pipeline_id Currently selected pipeline ID.
+	 *     @type int    $max_turns            Maximum turns allowed.
+	 *     @type string $request_id           Idempotency request ID.
+	 * }
+	 * @return array|WP_Error Response data array or WP_Error on failure.
+	 */
+	public static function processChat(
+		string $message,
+		string $provider,
+		string $model,
+		int $user_id,
+		array $options = array()
+	): array|WP_Error {
+		$session_id           = $options['session_id'] ?? null;
+		$selected_pipeline_id = (int) ( $options['selected_pipeline_id'] ?? 0 );
+		$max_turns            = $options['max_turns'] ?? PluginSettings::get( 'max_turns', PluginSettings::DEFAULT_MAX_TURNS );
+		$request_id           = $options['request_id'] ?? null;
+		$agent_id             = (int) ( $options['agent_id'] ?? 0 );
+
+		$chat_db          = ConversationStoreFactory::get();
+		$session_metadata = array();
+		$acting_token_id  = \DataMachine\Abilities\PermissionHelper::get_acting_token_id();
+
+		// --- Session resolution ---
+		if ( $session_id ) {
+			$session = $chat_db->get_session( $session_id );
+
+			if ( ! $session ) {
+				return new WP_Error(
+					'session_not_found',
+					__( 'Session not found', 'data-machine' ),
+					array( 'status' => 404 )
+				);
+			}
+
+			if ( (int) $session['user_id'] !== $user_id ) {
+				return new WP_Error(
+					'session_access_denied',
+					__( 'Access denied to this session', 'data-machine' ),
+					array( 'status' => 403 )
+				);
+			}
+
+			$messages         = $session['messages'];
+			$session_metadata = $session['metadata'] ?? array();
+		} else {
+			// Check for recent pending session to prevent duplicates from timeout retries.
+			$pending_session = $chat_db->get_recent_pending_session( $user_id, 600, 'chat', $acting_token_id );
+
+			if ( $pending_session ) {
+				$session_id       = $pending_session['session_id'];
+				$messages         = $pending_session['messages'];
+				$session_metadata = $pending_session['metadata'] ?? array();
+
+				do_action(
+					'datamachine_log',
+					'info',
+					'Chat: Reusing pending session (deduplication)',
+					array(
+						'session_id'          => $session_id,
+						'user_id'             => $user_id,
+						'original_created_at' => $pending_session['created_at'],
+						'mode'                => 'chat',
+					)
+				);
+			} else {
+				$create_result = self::createSession( $user_id, '', $agent_id );
+
+				if ( is_wp_error( $create_result ) ) {
+					return $create_result;
+				}
+
+				$session_id = $create_result;
+				$messages   = array();
+			}
+		}
+
+		// --- Build user message (text or multi-modal with attachments) ---
+		$attachments = $options['attachments'] ?? array();
+
+		if ( ! empty( $attachments ) ) {
+			$content    = ConversationManager::buildMultiModalContent( $message, $attachments );
+			$metadata   = array(
+				'type'        => 'multimodal',
+				'attachments' => $attachments,
+			);
+			$messages[] = ConversationManager::buildConversationMessage( 'user', $content, $metadata );
+		} else {
+			$messages[] = ConversationManager::buildConversationMessage( 'user', $message, array( 'type' => 'text' ) );
+		}
+
+		$chat_db->update_session(
+			$session_id,
+			$messages,
+			array_merge(
+				$session_metadata,
+				array(
+					'status'        => 'processing',
+					'started_at'    => current_time( 'mysql', true ),
+					'message_count' => count( $messages ),
+				)
+			),
+			$provider,
+			$model
+		);
+
+		// Set request_id transient BEFORE AI loop to prevent duplicate sessions
+		// when retries arrive during processing.
+		if ( $request_id ) {
+			$cache_key = 'datamachine_chat_request_' . $request_id;
+			set_transient(
+				$cache_key,
+				array(
+					'session_id' => $session_id,
+					'pending'    => true,
+				),
+				60
+			);
+		}
+
+		// --- Execute AI conversation turn ---
+		$result = self::executeConversationTurn(
+			$session_id,
+			$messages,
+			$provider,
+			$model,
+			array(
+				'single_turn'          => true,
+				'max_turns'            => $max_turns,
+				'selected_pipeline_id' => $selected_pipeline_id ? $selected_pipeline_id : null,
+				'mode'                 => ToolPolicyResolver::MODE_CHAT,
+				'user_id'              => $user_id,
+				'agent_id'             => $agent_id,
+				'client_context'       => $options['client_context'] ?? array(),
+			)
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		// --- Update session state ---
+		$is_completed = $result['completed'];
+
+		$metadata = array(
+			'status'            => $is_completed ? 'completed' : 'processing',
+			'last_activity'     => current_time( 'mysql', true ),
+			'message_count'     => count( $result['messages'] ),
+			'current_turn'      => $result['turn_count'],
+			'has_pending_tools' => ! $is_completed,
+		);
+
+		// Accumulate token usage across turns in session metadata.
+		$turn_usage = $result['usage'] ?? array();
+		if ( ! empty( $turn_usage ) && ( $turn_usage['total_tokens'] ?? 0 ) > 0 ) {
+			$existing_session  = $chat_db->get_session( $session_id );
+			$existing_metadata = ! empty( $existing_session['metadata'] )
+				? ( is_array( $existing_session['metadata'] ) ? $existing_session['metadata'] : json_decode( $existing_session['metadata'], true ) )
+				: array();
+			$existing_usage    = $existing_metadata['token_usage'] ?? array(
+				'prompt_tokens'     => 0,
+				'completion_tokens' => 0,
+				'total_tokens'      => 0,
+			);
+
+			$metadata['token_usage'] = array(
+				'prompt_tokens'     => (int) $existing_usage['prompt_tokens'] + (int) ( $turn_usage['prompt_tokens'] ?? 0 ),
+				'completion_tokens' => (int) $existing_usage['completion_tokens'] + (int) ( $turn_usage['completion_tokens'] ?? 0 ),
+				'total_tokens'      => (int) $existing_usage['total_tokens'] + (int) ( $turn_usage['total_tokens'] ?? 0 ),
+			);
+		}
+
+		if ( $selected_pipeline_id ) {
+			$metadata['selected_pipeline_id'] = $selected_pipeline_id;
+		}
+
+		$update_success = $chat_db->update_session(
+			$session_id,
+			$result['messages'],
+			$metadata,
+			$provider,
+			$model
+		);
+
+		// --- Title generation for new/untitled sessions ---
+		if ( $update_success ) {
+			$session = $chat_db->get_session( $session_id );
+			if ( $session && empty( $session['title'] ) ) {
+				$ability = wp_get_ability( 'datamachine/generate-session-title' );
+				if ( $ability ) {
+					$ability->execute( array( 'session_id' => $session_id ) );
+				}
+			}
+		}
+
+		// --- Build response data ---
+		$response_data = array(
+			'session_id'   => $session_id,
+			'response'     => $result['final_content'],
+			'tool_calls'   => $result['last_tool_calls'],
+			'conversation' => $result['messages'],
+			'metadata'     => $metadata,
+			'completed'    => $is_completed,
+			'max_turns'    => $max_turns,
+			'turn_number'  => $result['turn_count'],
+		);
+
+		if ( isset( $result['warning'] ) ) {
+			$response_data['warning'] = $result['warning'];
+		}
+
+		if ( isset( $result['max_turns_reached'] ) && $result['max_turns_reached'] ) {
+			$response_data['max_turns_reached'] = true;
+		}
+
+		/**
+		 * Fires after a chat response is fully processed and ready for external delivery.
+		 *
+		 * Extensions (e.g. chat bridge integrations) can hook here to forward
+		 * agent responses to external clients via webhooks, message queues, etc.
+		 *
+		 * @since 0.51.0
+		 *
+		 * @param string $session_id    Chat session ID.
+		 * @param array  $response_data Complete response data including response text, metadata, and conversation.
+		 * @param int    $agent_id      Agent ID that produced the response.
+		 * @param int    $user_id       WordPress user ID who owns the session.
+		 */
+		do_action( 'datamachine_chat_response_complete', $session_id, $response_data, $agent_id, $user_id );
+
+		return $response_data;
+	}
+
+	/**
+	 * Continue an existing chat session with pending tool calls.
+	 *
+	 * Loads the session, runs one more AI conversation turn, extracts
+	 * only the new messages, and updates the session state.
+	 *
+	 * @since 0.31.0
+	 *
+	 * @param string $session_id Session ID to continue.
+	 * @param int    $user_id    Current user ID for ownership check.
+	 * @return array|WP_Error Response data array or WP_Error on failure.
+	 */
+	public static function processContinue( string $session_id, int $user_id ): array|WP_Error {
+		$max_turns = PluginSettings::get( 'max_turns', PluginSettings::DEFAULT_MAX_TURNS );
+
+		$chat_db = ConversationStoreFactory::get();
+		$session = $chat_db->get_session( $session_id );
+
+		if ( ! $session ) {
+			return new WP_Error(
+				'session_not_found',
+				__( 'Session not found', 'data-machine' ),
+				array( 'status' => 404 )
+			);
+		}
+
+		if ( (int) $session['user_id'] !== $user_id ) {
+			return new WP_Error(
+				'session_access_denied',
+				__( 'Access denied to this session', 'data-machine' ),
+				array( 'status' => 403 )
+			);
+		}
+
+		$metadata = $session['metadata'] ?? array();
+
+		// Short-circuit if session is already completed.
+		if ( isset( $metadata['status'] ) && 'completed' === $metadata['status'] && empty( $metadata['has_pending_tools'] ) ) {
+			return array(
+				'session_id'        => $session_id,
+				'new_messages'      => array(),
+				'final_content'     => '',
+				'tool_calls'        => array(),
+				'completed'         => true,
+				'turn_number'       => $metadata['current_turn'] ?? 0,
+				'max_turns'         => $max_turns,
+				'max_turns_reached' => false,
+			);
+		}
+
+		$messages             = $session['messages'] ?? array();
+		$chat_defaults        = PluginSettings::resolveModelForAgentMode( (int) ( $session['agent_id'] ?? 0 ), 'chat' );
+		$provider             = $session['provider'] ?? $chat_defaults['provider'];
+		$model                = $session['model'] ?? $chat_defaults['model'];
+		$message_count_before = count( $messages );
+		$selected_pipeline_id = $metadata['selected_pipeline_id'] ?? null;
+
+		$result = self::executeConversationTurn(
+			$session_id,
+			$messages,
+			$provider,
+			$model,
+			array(
+				'single_turn'          => true,
+				'max_turns'            => $max_turns,
+				'selected_pipeline_id' => $selected_pipeline_id,
+				'mode'                 => ToolPolicyResolver::MODE_CHAT,
+				'user_id'              => (int) ( $session['user_id'] ?? 0 ),
+			)
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		// Extract new messages (added during this turn).
+		$new_messages      = array_slice( $result['messages'], $message_count_before );
+		$is_completed      = $result['completed'];
+		$current_turn      = ( $metadata['current_turn'] ?? 0 ) + $result['turn_count'];
+		$max_turns_reached = $result['max_turns_reached'] ?? ( $current_turn >= $max_turns );
+
+		// Update session with new state.
+		$updated_metadata = array(
+			'status'            => $is_completed ? 'completed' : 'processing',
+			'last_activity'     => current_time( 'mysql', true ),
+			'message_count'     => count( $result['messages'] ),
+			'current_turn'      => $current_turn,
+			'has_pending_tools' => ! $is_completed,
+		);
+
+		// Accumulate token usage across continuation turns.
+		$turn_usage     = $result['usage'] ?? array();
+		$existing_usage = $metadata['token_usage'] ?? array(
+			'prompt_tokens'     => 0,
+			'completion_tokens' => 0,
+			'total_tokens'      => 0,
+		);
+		if ( ! empty( $turn_usage ) && ( $turn_usage['total_tokens'] ?? 0 ) > 0 ) {
+			$updated_metadata['token_usage'] = array(
+				'prompt_tokens'     => (int) $existing_usage['prompt_tokens'] + (int) ( $turn_usage['prompt_tokens'] ?? 0 ),
+				'completion_tokens' => (int) $existing_usage['completion_tokens'] + (int) ( $turn_usage['completion_tokens'] ?? 0 ),
+				'total_tokens'      => (int) $existing_usage['total_tokens'] + (int) ( $turn_usage['total_tokens'] ?? 0 ),
+			);
+		}
+
+		if ( $selected_pipeline_id ) {
+			$updated_metadata['selected_pipeline_id'] = $selected_pipeline_id;
+		}
+
+		$chat_db->update_session(
+			$session_id,
+			$result['messages'],
+			$updated_metadata,
+			$provider,
+			$model
+		);
+
+		$continue_response = array(
+			'session_id'        => $session_id,
+			'new_messages'      => $new_messages,
+			'final_content'     => $result['final_content'],
+			'tool_calls'        => $result['last_tool_calls'],
+			'completed'         => $is_completed,
+			'turn_number'       => $current_turn,
+			'max_turns'         => $max_turns,
+			'max_turns_reached' => $max_turns_reached,
+		);
+
+		/** This action is documented in inc/Api/Chat/ChatOrchestrator.php */
+		do_action( 'datamachine_chat_response_complete', $session_id, $continue_response, (int) ( $session['agent_id'] ?? 0 ), $user_id );
+
+		return $continue_response;
+	}
+
+	/**
+	 * Process a webhook ping as a full multi-turn chat session.
+	 *
+	 * Creates an admin-owned session, runs the AI loop to completion,
+	 * generates a title, and returns the result.
+	 *
+	 * @since 0.31.0
+	 *
+	 * @param string $message Full message text (with optional prompt/context prepended).
+	 * @param string $provider AI provider identifier.
+	 * @param string $model    AI model identifier.
+	 * @return array|WP_Error Response data array or WP_Error on failure.
+	 */
+	public static function processPing( string $message, string $provider, string $model ): array|WP_Error {
+		// Use admin user for session ownership since this is a system-level request.
+		$admin_users = get_users(
+			array(
+				'role'    => 'administrator',
+				'number'  => 1,
+				'orderby' => 'ID',
+				'order'   => 'ASC',
+			)
+		);
+		$user_id     = ! empty( $admin_users ) ? $admin_users[0]->ID : 1;
+
+		$chat_db = ConversationStoreFactory::get();
+
+		$session_id = self::createSession( $user_id, 'ping' );
+
+		if ( is_wp_error( $session_id ) ) {
+			return $session_id;
+		}
+
+		$messages   = array();
+		$messages[] = ConversationManager::buildConversationMessage( 'user', $message, array( 'type' => 'text' ) );
+
+		// Persist user message.
+		$chat_db->update_session(
+			$session_id,
+			$messages,
+			array(
+				'status'        => 'processing',
+				'started_at'    => current_time( 'mysql', true ),
+				'message_count' => count( $messages ),
+			),
+			$provider,
+			$model
+		);
+
+		$result = self::executeConversationTurn(
+			$session_id,
+			$messages,
+			$provider,
+			$model,
+			array(
+				'mode'    => ToolPolicyResolver::MODE_CHAT,
+				'user_id' => $user_id,
+			)
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		// Update session to completed with ping source and token usage.
+		$ping_metadata = array(
+			'status'        => 'completed',
+			'last_activity' => current_time( 'mysql', true ),
+			'message_count' => count( $result['messages'] ),
+			'source'        => 'ping',
+		);
+
+		$ping_usage = $result['usage'] ?? array();
+		if ( ! empty( $ping_usage ) && ( $ping_usage['total_tokens'] ?? 0 ) > 0 ) {
+			$ping_metadata['token_usage'] = $ping_usage;
+		}
+
+		$chat_db->update_session(
+			$session_id,
+			$result['messages'],
+			$ping_metadata,
+			$provider,
+			$model
+		);
+
+		// Generate title.
+		$ability = wp_get_ability( 'datamachine/generate-session-title' );
+		if ( $ability ) {
+			$ability->execute( array( 'session_id' => $session_id ) );
+		}
+
+		do_action(
+			'datamachine_log',
+			'info',
+			'Chat ping completed',
+			array(
+				'session_id' => $session_id,
+				'turns'      => $result['turn_count'],
+				'mode'       => 'chat',
+			)
+		);
+
+		$ping_response = array(
+			'session_id' => $session_id,
+			'response'   => $result['final_content'],
+			'turns'      => $result['turn_count'],
+			'completed'  => true,
+		);
+
+		/** This action is documented in inc/Api/Chat/ChatOrchestrator.php */
+		do_action( 'datamachine_chat_response_complete', $session_id, $ping_response, 0, $user_id );
+
+		return $ping_response;
+	}
+
+	/**
+	 * Create a new chat session.
+	 *
+	 * Delegates to the create-chat-session ability when available,
+	 * falls back to direct ChatDatabase access.
+	 *
+	 * @since 0.31.0
+	 *
+	 * @param int    $user_id User ID who owns the session.
+	 * @param string $source  Optional source identifier.
+	 * @return string|WP_Error Session ID on success, WP_Error on failure.
+	 */
+	private static function createSession( int $user_id, string $source = '', int $agent_id = 0 ): string|WP_Error {
+		if ( $agent_id <= 0 ) {
+			$agent_id = function_exists( 'datamachine_resolve_or_create_agent_id' )
+				? datamachine_resolve_or_create_agent_id( $user_id )
+				: 0;
+		}
+
+		$ability = wp_get_ability( 'datamachine/create-chat-session' );
+
+		if ( $ability ) {
+			$input = array(
+				'user_id'  => $user_id,
+				'agent_id' => $agent_id,
+				'mode'     => 'chat',
+			);
+
+			if ( $source ) {
+				$input['source'] = $source;
+			}
+
+			$result = \DataMachine\Abilities\PermissionHelper::run_as_authenticated(
+				function () use ( $ability, $input ) {
+					return $ability->execute( $input );
+				}
+			);
+
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+
+			if ( empty( $result['success'] ) ) {
+				return new WP_Error(
+					'session_creation_failed',
+					$result['error'] ?? __( 'Failed to create chat session', 'data-machine' ),
+					array( 'status' => 500 )
+				);
+			}
+
+			return $result['session_id'];
+		}
+
+		// Fallback: direct store access.
+		$chat_db  = ConversationStoreFactory::get();
+		$metadata = array(
+			'started_at'    => current_time( 'mysql', true ),
+			'message_count' => 0,
+		);
+
+		$acting_token_id = \DataMachine\Abilities\PermissionHelper::get_acting_token_id();
+		if ( $acting_token_id ) {
+			$metadata['token_id'] = $acting_token_id;
+		}
+
+		if ( $source ) {
+			$metadata['source'] = $source;
+		}
+
+		$session_id = $chat_db->create_session( $user_id, $agent_id, $metadata, 'chat' );
+
+		if ( empty( $session_id ) ) {
+			return new WP_Error(
+				'session_creation_failed',
+				__( 'Failed to create chat session', 'data-machine' ),
+				array( 'status' => 500 )
+			);
+		}
+
+		return $session_id;
+	}
+
+	/**
+	 * Execute a single conversation turn with the AI loop.
+	 *
+	 * Encapsulates tool loading, AIConversationLoop
+	 * execution, error handling, and session error updates.
+	 *
+	 * @since 0.26.0
+	 * @since 0.31.0 Moved from Chat.php to ChatOrchestrator.
+	 *
+	 * @param string $session_id Session ID.
+	 * @param array  $messages   Current conversation messages.
+	 * @param string $provider   AI provider identifier.
+	 * @param string $model      AI model identifier.
+	 * @param array  $options    Optional settings {
+	 *     @type bool   $single_turn          Whether to run single turn (default false).
+	 *     @type int    $max_turns             Maximum turns allowed (default 25).
+	 *     @type int    $selected_pipeline_id  Currently selected pipeline ID.
+	 *     @type string $mode                  Agent mode (default 'chat').
+	 * }
+	 * @return array|WP_Error Result array with messages, final_content, completed, turn_count,
+	 *                        last_tool_calls, and optional warning/max_turns_reached keys.
+	 *                        WP_Error on failure.
+	 */
+	public static function executeConversationTurn(
+		string $session_id,
+		array $messages,
+		string $provider,
+		string $model,
+		array $options = array()
+	): array|WP_Error {
+		$single_turn          = $options['single_turn'] ?? false;
+		$max_turns            = $options['max_turns'] ?? PluginSettings::get( 'max_turns', PluginSettings::DEFAULT_MAX_TURNS );
+		$selected_pipeline_id = $options['selected_pipeline_id'] ?? null;
+		$mode                 = $options['mode'] ?? ToolPolicyResolver::MODE_CHAT;
+		$agent_id             = (int) ( $options['agent_id'] ?? 0 );
+
+		$chat_db = ConversationStoreFactory::get();
+
+		try {
+			$user_id = $options['user_id'] ?? 0;
+
+			if ( $agent_id <= 0 && $user_id > 0 && function_exists( 'datamachine_resolve_or_create_agent_id' ) ) {
+				$agent_id = datamachine_resolve_or_create_agent_id( $user_id );
+			}
+
+			$resolver       = new ToolPolicyResolver();
+			$all_tools      = $resolver->resolve(
+				array(
+					'mode'     => ToolPolicyResolver::MODE_CHAT,
+					'agent_id' => $agent_id,
+				)
+			);
+			$client_context = $options['client_context'] ?? array();
+
+			$loop_context = array(
+				'session_id' => $session_id,
+				'user_id'    => $user_id,
+				'agent_id'   => $agent_id,
+			);
+			if ( $selected_pipeline_id ) {
+				$loop_context['selected_pipeline_id'] = $selected_pipeline_id;
+			}
+			if ( ! empty( $client_context ) ) {
+				$loop_context['client_context'] = $client_context;
+			}
+
+			$loop_result = AIConversationLoop::run(
+				$messages,
+				$all_tools,
+				$provider,
+				$model,
+				$mode,
+				$loop_context,
+				$max_turns,
+				$single_turn
+			);
+
+			if ( isset( $loop_result['error'] ) ) {
+				$chat_db->update_session(
+					$session_id,
+					$messages,
+					array(
+						'status'        => 'error',
+						'error_message' => $loop_result['error'],
+						'last_activity' => current_time( 'mysql', true ),
+						'message_count' => count( $messages ),
+					),
+					$provider,
+					$model
+				);
+
+				do_action(
+					'datamachine_log',
+					'error',
+					'AI loop returned error',
+					array(
+						'session_id' => $session_id,
+						'error'      => $loop_result['error'],
+						'mode'       => $mode,
+					)
+				);
+
+				return new WP_Error(
+					'chubes_ai_request_failed',
+					$loop_result['error'],
+					array( 'status' => 500 )
+				);
+			}
+
+			return array(
+				'messages'          => $loop_result['messages'],
+				'final_content'     => $loop_result['final_content'],
+				'completed'         => $loop_result['completed'] ?? false,
+				'turn_count'        => $loop_result['turn_count'] ?? 1,
+				'last_tool_calls'   => $loop_result['last_tool_calls'] ?? array(),
+				'warning'           => $loop_result['warning'] ?? null,
+				'max_turns_reached' => $loop_result['max_turns_reached'] ?? false,
+				'usage'             => $loop_result['usage'] ?? array(),
+			);
+		} catch ( \Throwable $e ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'AI loop failed with exception',
+				array(
+					'session_id' => $session_id,
+					'error'      => $e->getMessage(),
+					'mode'       => $mode,
+				)
+			);
+
+			$chat_db->update_session(
+				$session_id,
+				$messages,
+				array(
+					'status'        => 'error',
+					'error_message' => $e->getMessage(),
+					'last_activity' => current_time( 'mysql', true ),
+					'message_count' => count( $messages ),
+				),
+				$provider,
+				$model
+			);
+
+			return new WP_Error(
+				'chat_error',
+				$e->getMessage(),
+				array( 'status' => 500 )
+			);
+		}
+	}
+}

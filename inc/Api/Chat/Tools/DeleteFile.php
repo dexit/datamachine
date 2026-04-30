@@ -3,23 +3,23 @@
  * Delete File Tool
  *
  * Focused tool for deleting uploaded files.
+ * Delegates to FlowFileAbilities for core logic.
  *
  * @package DataMachine\Api\Chat\Tools
  */
 
 namespace DataMachine\Api\Chat\Tools;
 
-if (!defined('ABSPATH')) {
+if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-use DataMachine\Engine\AI\Tools\ToolRegistrationTrait;
+use DataMachine\Engine\AI\Tools\BaseTool;
 
-class DeleteFile {
-	use ToolRegistrationTrait;
+class DeleteFile extends BaseTool {
 
 	public function __construct() {
-		$this->registerTool('chat', 'delete_file', [$this, 'getToolDefinition']);
+		$this->registerTool( 'delete_file', array( $this, 'getToolDefinition' ), array( 'chat' ), array( 'ability' => 'datamachine/delete-flow-file' ) );
 	}
 
 	/**
@@ -28,18 +28,23 @@ class DeleteFile {
 	 * @return array Tool definition array
 	 */
 	public function getToolDefinition(): array {
-		return [
-			'class' => self::class,
-			'method' => 'handle_tool_call',
-			'description' => 'Delete an uploaded file.',
-			'parameters' => [
-				'filename' => [
-					'type' => 'string',
-					'required' => true,
-					'description' => 'Name of the file to delete'
-				]
-			]
-		];
+		return array(
+			'class'       => self::class,
+			'method'      => 'handle_tool_call',
+			'description' => 'Delete an uploaded file. Requires flow_step_id to identify the file scope.',
+			'parameters'  => array(
+				'filename'     => array(
+					'type'        => 'string',
+					'required'    => true,
+					'description' => 'Name of the file to delete',
+				),
+				'flow_step_id' => array(
+					'type'        => 'string',
+					'required'    => false,
+					'description' => 'Flow step ID for flow-level files (e.g., "1-2" for pipeline 1, flow 2)',
+				),
+			),
+		);
 	}
 
 	/**
@@ -49,39 +54,61 @@ class DeleteFile {
 	 * @param array $tool_def Tool definition
 	 * @return array Tool execution result
 	 */
-	public function handle_tool_call(array $parameters, array $tool_def = []): array {
-		$filename = $parameters['filename'] ?? null;
+	public function handle_tool_call( array $parameters, array $tool_def = array() ): array {
+		$filename     = $parameters['filename'] ?? null;
+		$flow_step_id = $parameters['flow_step_id'] ?? null;
 
-		if (empty($filename)) {
-			return [
-				'success' => false,
-				'error' => 'filename is required',
-				'tool_name' => 'delete_file'
-			];
+		if ( empty( $filename ) ) {
+			return array(
+				'success'   => false,
+				'error'     => 'filename is required',
+				'tool_name' => 'delete_file',
+			);
 		}
 
-		$filename = sanitize_file_name($filename);
-
-		$request = new \WP_REST_Request('DELETE', '/datamachine/v1/files/' . $filename);
-		$response = rest_do_request($request);
-		$data = $response->get_data();
-		$status = $response->get_status();
-
-		if ($status >= 400) {
-			return [
-				'success' => false,
-				'error' => $data['message'] ?? 'Failed to delete file',
-				'tool_name' => 'delete_file'
-			];
+		$ability = wp_get_ability( 'datamachine/delete-flow-file' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Delete file ability not available',
+				'tool_name' => 'delete_file',
+			);
 		}
 
-		return [
-			'success' => true,
-			'data' => [
-				'filename' => $filename,
-				'message' => 'File deleted.'
-			],
-			'tool_name' => 'delete_file'
-		];
+		$input = array(
+			'filename' => sanitize_file_name( $filename ),
+		);
+
+		if ( $flow_step_id ) {
+			$input['flow_step_id'] = sanitize_text_field( $flow_step_id );
+		}
+
+		$result = $ability->execute( $input );
+
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'delete_file',
+			);
+		}
+
+		if ( ! $result['success'] ) {
+			return array(
+				'success'   => false,
+				'error'     => $result['error'] ?? 'Failed to delete file',
+				'tool_name' => 'delete_file',
+			);
+		}
+
+		return array(
+			'success'   => true,
+			'data'      => array(
+				'filename' => $input['filename'],
+				'scope'    => $result['scope'],
+				'message'  => $result['message'],
+			),
+			'tool_name' => 'delete_file',
+		);
 	}
 }

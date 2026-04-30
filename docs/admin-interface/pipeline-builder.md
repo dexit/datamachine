@@ -26,7 +26,7 @@ Step and handler configuration is driven by React modals and handler schemas fro
 
 - **Handler selection** uses `HandlerSelectionModal.jsx`.
 - **Handler settings** uses `HandlerSettingsModal.jsx` (not a PHP template). The modal renders fields from the handler schema and submits updates via the flow update mutation.
-- **OAuth connection** is surfaced through an OAuth modal (`OAuthAuthenticationModal.jsx`) and popup handler components in `components/modals/oauth/`.
+- **OAuth connection** is surfaced through an OAuth modal (`OAuthAuthenticationModal.jsx`) and popup handler components in `inc/Core/Admin/Pages/Pipelines/assets/react/components/modals/oauth/`.
 
 ## Integrated Chat Sidebar
 
@@ -102,7 +102,7 @@ Modal state is also held in the UI store (`activeModal`, `modalData`) but is not
 
 The Pipelines UI calls REST endpoints through `inc/Core/Admin/Pages/Pipelines/assets/react/utils/api.js` (a wrapper around `@wordpress/api-fetch` that reads the nonce/namespace from `window.dataMachineConfig`).
 
-For the authoritative list of endpoints used by the UI, refer to `inc/Core/Admin/Pages/Pipelines/assets/react/utils/api.js` and the PHP REST controllers under `data-machine/inc/Api/`.
+For the authoritative list of endpoints used by the UI, refer to `inc/Core/Admin/Pages/Pipelines/assets/react/utils/api.js` and the PHP REST controllers under `inc/Api/`.
 
 ### Benefits of React Architecture
 
@@ -143,49 +143,31 @@ For the authoritative list of endpoints used by the UI, refer to `inc/Core/Admin
 - Centralized state management
 - Consistent error handling patterns
 
-## Advanced Architecture Patterns (@since v0.2.5)
+## Advanced Architecture Patterns
 
-### Model-View Pattern
+### Handler API Helpers
 
-The Pipelines interface implements a model-view separation pattern for handler state management:
+Handler-related server state is fetched through TanStack Query hooks under `inc/Core/Admin/Pages/Pipelines/assets/react/queries/` and shared utility helpers under `inc/Core/Admin/Pages/Pipelines/assets/react/utils/`:
 
-**HandlerProvider** (`context/HandlerProvider.jsx`):
-- React context providing handler state across components
-- Centralizes handler selection and configuration state
-- Reduces prop drilling for handler-related data
-
-**HandlerModel** (`models/HandlerModel.js`):
-- Abstract model layer for handler data operations
-- Provides consistent interface for handler state management
-- Separates business logic from UI components
-
-**HandlerFactory** (`models/HandlerFactory.js`):
-- Factory pattern for handler model instantiation
-- Creates appropriate handler models based on handler type
-- Centralizes handler model creation logic
-
-**Individual Handler Models** (`models/handlers/`):
-- Type-specific handler models (e.g., TwitterHandlerModel, GoogleSheetsHandlerModel)
-- Encapsulate handler-specific behavior and validation
-- Provide handler-specific methods and computed properties
+- `inc/Core/Admin/Pages/Pipelines/assets/react/queries/handlers.js` - handler metadata queries
+- `inc/Core/Admin/Pages/Pipelines/assets/react/utils/handlerSettings.js` - field normalization and settings helpers
 
 ### Service Layer Architecture
 
-**handlerService** (`services/handlerService.js`):
-- Service abstraction for handler-related API operations
+**Handler queries** (`inc/Core/Admin/Pages/Pipelines/assets/react/queries/handlers.js`):
+- Query abstraction for handler-related API operations
 - Separates API communication from component logic
 - Provides reusable handler operation methods
 - Centralizes error handling for handler operations
 
 **Benefits**:
-- Clear separation between API calls and UI logic
-- Testable service layer independent of components
-- Consistent error handling patterns
-- Easy to mock for testing
+- Clear separation between API calls, query state, and UI components
+- Consistent cache invalidation through TanStack Query
+- Reusable field-normalization helpers independent of modal rendering
 
 ### Modal Management System
 
-**ModalSwitch** (`components/shared/ModalSwitch.jsx`):
+**ModalSwitch** (`inc/Core/Admin/Pages/Pipelines/assets/react/components/shared/ModalSwitch.jsx`):
 - Centralized modal rendering component
 - Routes modal types to appropriate modal components
 - Replaces scattered conditional modal logic
@@ -212,40 +194,18 @@ The Pipelines interface implements a model-view separation pattern for handler s
 
 ```
 assets/react/
-├── context/              # React context providers
-│   └── HandlerProvider.jsx
-├── models/               # Handler models & factory
-│   ├── HandlerModel.js
-│   ├── HandlerFactory.js
-│   └── handlers/         # Type-specific models
-├── services/             # API service layer
-│   └── handlerService.js
-├── hooks/                # Custom React hooks
-│   ├── useHandlerModel.js
-│   └── useFormState.js
-├── queries/              # TanStack Query definitions
-│   ├── flows.js
-│   └── handlers.js
-├── stores/               # Zustand stores
-│   └── modalStore.js
-└── components/           # React components
-    ├── modals/
-    ├── flows/
-    ├── pipelines/
-    └── shared/
+├── components/           # UI components and modals
+├── queries/              # TanStack Query hooks
+├── stores/               # Zustand UI state
+└── utils/                # API and field helpers
 ```
 
 ### Pattern Benefits
 
-**Model-View Separation**:
-- Business logic isolated from UI rendering
-- Easier testing of handler operations
-- Reusable handler logic across components
-
-**Service Layer**:
-- API calls abstracted from components
-- Consistent error handling patterns
-- Easy to switch API implementations
+**Query/UI Separation**:
+- Server state isolated in query hooks
+- UI state isolated in the Zustand store
+- Field normalization isolated in utility helpers
 
 **Centralized Modal Management**:
 - Single modal rendering location
@@ -260,7 +220,5 @@ assets/react/
 **Implemented Features:**
 React architecture provides modern features including:
 - Drag-and-drop step reordering (implemented)
-- Real-time collaboration (possible)
 - Advanced validation UI (easy to implement)
-- Undo/redo functionality (state-based)
 - Keyboard shortcuts (event-based)

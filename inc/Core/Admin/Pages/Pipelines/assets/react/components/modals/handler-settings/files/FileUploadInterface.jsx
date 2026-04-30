@@ -4,26 +4,33 @@
  * Wrapper around reusable FileUploadDropzone for Files handler.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { Notice } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import { useFileUpload } from '../../../../hooks/useFormState';
 import FileUploadDropzone from '../../../shared/FileUploadDropzone';
 
 /**
  * File Upload Interface Component
  *
- * @param {Object} props - Component props
+ * @param {Object}   props                - Component props
  * @param {Function} props.onFileUploaded - File upload callback
- * @returns {React.ReactElement} File upload interface
+ * @return {React.ReactElement} File upload interface
  */
 export default function FileUploadInterface( { onFileUploaded } ) {
 	const fileUpload = useFileUpload();
 
 	/**
 	 * Handle file selection
+	 * @param file
 	 */
 	const handleFileSelected = ( file ) => {
-		fileUpload.upload(async () => {
+		fileUpload.upload( async () => {
 			// In production, this would upload to handler-specific storage
 			// For now, we'll simulate the upload
 			await new Promise( ( resolve ) => setTimeout( resolve, 1000 ) );
@@ -36,8 +43,8 @@ export default function FileUploadInterface( { onFileUploaded } ) {
 				} );
 			}
 
-			return __( 'File uploaded successfully!', 'datamachine' );
-		});
+			return __( 'File uploaded successfully!', 'data-machine' );
+		} );
 	};
 
 	return (
@@ -74,10 +81,15 @@ export default function FileUploadInterface( { onFileUploaded } ) {
 					'png',
 					'gif',
 				] }
-				maxSizeMB={ Math.round((window.dataMachineConfig?.maxUploadSize || 10485760) / (1024 * 1024)) }
+				maxSizeMB={ Math.round(
+					( window.dataMachineConfig?.maxUploadSize || 10485760 ) /
+						( 1024 * 1024 )
+				) }
 				disabled={ fileUpload.isUploading }
 				uploadText={
-					fileUpload.isUploading ? __( 'Uploading...', 'datamachine' ) : null
+					fileUpload.isUploading
+						? __( 'Uploading…', 'data-machine' )
+						: null
 				}
 			/>
 		</div>

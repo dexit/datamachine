@@ -11,337 +11,291 @@
 
 namespace DataMachine\Core\FilesRepository;
 
-if (!defined('ABSPATH')) {
-    exit;
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
 }
 
 class FileStorage {
 
-    /**
-     * Repository directory name
-     */
-    private const REPOSITORY_DIR = 'datamachine-files';
+	/**
+	 * Repository directory name
+	 */
+	private const REPOSITORY_DIR = 'datamachine-files';
 
-    /**
-     * Directory manager instance
-     *
-     * @var DirectoryManager
-     */
-    private $directory_manager;
+	/**
+	 * Directory manager instance
+	 *
+	 * @var DirectoryManager
+	 */
+	private $directory_manager;
 
-    public function __construct() {
-        $this->directory_manager = new DirectoryManager();
-    }
+	public function __construct() {
+		$this->directory_manager = new DirectoryManager();
+	}
 
-    /**
-     * Store file in flow files directory
-     *
-     * @param string $source_path Source file path
-     * @param string $filename Original filename
-     * @param array $context Context array with pipeline/flow metadata
-     * @return string|false Repository file path on success, false on failure
-     */
-    public function store_file(string $source_path, string $filename, array $context): string|false {
-        $directory = $this->directory_manager->get_flow_files_directory(
-            $context['pipeline_id'],
-            $context['flow_id']
-        );
+	/**
+	 * Store file in flow files directory
+	 *
+	 * @param string $source_path Source file path
+	 * @param string $filename Original filename
+	 * @param array  $context Context array with pipeline/flow metadata
+	 * @return string|false Repository file path on success, false on failure
+	 */
+	public function store_file( string $source_path, string $filename, array $context ): string|false {
+		$directory = $this->directory_manager->get_flow_files_directory(
+			$context['pipeline_id'],
+			$context['flow_id']
+		);
 
-        if (!$this->directory_manager->ensure_directory_exists($directory)) {
-            return false;
-        }
+		if ( ! $this->directory_manager->ensure_directory_exists( $directory ) ) {
+			return false;
+		}
 
-        if (!file_exists($source_path)) {
-            do_action('datamachine_log', 'error', 'FileStorage: Source file not found.', [
-                'source_path' => $source_path
-            ]);
-            return false;
-        }
+		if ( ! file_exists( $source_path ) ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'FileStorage: Source file not found.',
+				array(
+					'source_path' => $source_path,
+				)
+			);
+			return false;
+		}
 
-        $safe_filename = sanitize_file_name($filename);
-        $destination = "{$directory}/{$safe_filename}";
+		$safe_filename = sanitize_file_name( $filename );
+		$destination   = "{$directory}/{$safe_filename}";
 
-        if (!copy($source_path, $destination)) {
-            do_action('datamachine_log', 'error', 'FileStorage: Failed to copy file.', [
-                'source' => $source_path,
-                'destination' => $destination
-            ]);
-            return false;
-        }
+		$fs = FilesystemHelper::get();
+		if ( ! $fs || ! $fs->copy( $source_path, $destination, true ) ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'FileStorage: Failed to copy file.',
+				array(
+					'source'      => $source_path,
+					'destination' => $destination,
+				)
+			);
+			return false;
+		}
 
-        return $destination;
-    }
+		return $destination;
+	}
 
-    /**
-     * Store pipeline context file
-     *
-     * @param int $pipeline_id Pipeline ID
-     * @param string $pipeline_name Pipeline name
-     * @param array $file_data File data array (source_path, original_name)
-     * @return array|false File information on success, false on failure
-     */
-    public function store_pipeline_file(int $pipeline_id, string $pipeline_name, array $file_data): array|false {
-        $directory = $this->directory_manager->get_pipeline_context_directory($pipeline_id, $pipeline_name);
+	/**
+	 * Get all files in flow files directory
+	 *
+	 * @param array $context Context array with pipeline/flow metadata
+	 * @return array Array of file information
+	 */
+	public function get_all_files( array $context ): array {
+		$directory = $this->directory_manager->get_flow_files_directory(
+			$context['pipeline_id'],
+			$context['flow_id']
+		);
 
-        if (!$this->directory_manager->ensure_directory_exists($directory)) {
-            return false;
-        }
+		if ( ! is_dir( $directory ) ) {
+			return array();
+		}
 
-        $source_path = $file_data['source_path'] ?? '';
-        $filename = $file_data['original_name'] ?? '';
+		$files     = glob( "{$directory}/*" );
+		$file_list = array();
 
-        if (empty($source_path) || empty($filename)) {
-            do_action('datamachine_log', 'error', 'FileStorage: Missing required parameters for pipeline context.', [
-                'pipeline_id' => $pipeline_id
-            ]);
-            return false;
-        }
+		foreach ( $files as $file_path ) {
+			if ( is_file( $file_path ) ) {
+				$filename = basename( $file_path );
 
-        if (!file_exists($source_path)) {
-            do_action('datamachine_log', 'error', 'FileStorage: Source file not found.', [
-                'source_path' => $source_path
-            ]);
-            return false;
-        }
+				if ( 'index.php' === $filename ) {
+					continue;
+				}
 
-        $safe_filename = sanitize_file_name($filename);
-        $destination = "{$directory}/{$safe_filename}";
+				$file_list[] = array(
+					'filename' => $filename,
+					'path'     => $file_path,
+					'size'     => filesize( $file_path ),
+					'modified' => gmdate( 'c', filemtime( $file_path ) ),
+				);
+			}
+		}
 
-        if (!copy($source_path, $destination)) {
-            do_action('datamachine_log', 'error', 'FileStorage: Failed to store pipeline context file.', [
-                'source' => $source_path,
-                'destination' => $destination
-            ]);
-            return false;
-        }
+		return $file_list;
+	}
 
-        return [
-            'original_name' => $filename,
-            'persistent_path' => $destination,
-            'size' => filesize($destination),
-            'mime_type' => mime_content_type($destination),
-            'uploaded_at' => current_time('mysql', true)
-        ];
-    }
+	/**
+	 * Delete file from flow files directory
+	 *
+	 * @param string $filename Filename to delete
+	 * @param array  $context Context array with pipeline/flow metadata
+	 * @return bool True on success, false on failure
+	 */
+	public function delete_file( string $filename, array $context ): bool {
+		$directory = $this->directory_manager->get_flow_files_directory(
+			$context['pipeline_id'],
+			$context['flow_id']
+		);
 
-    /**
-     * Get all files in flow files directory
-     *
-     * @param array $context Context array with pipeline/flow metadata
-     * @return array Array of file information
-     */
-    public function get_all_files(array $context): array {
-        $directory = $this->directory_manager->get_flow_files_directory(
-            $context['pipeline_id'],
-            $context['flow_id']
-        );
+		$safe_filename = sanitize_file_name( $filename );
+		$file_path     = "{$directory}/{$safe_filename}";
 
-        if (!is_dir($directory)) {
-            return [];
-        }
+		if ( ! file_exists( $file_path ) ) {
+			return false;
+		}
 
-        $files = glob("{$directory}/*");
-        $file_list = [];
+		return wp_delete_file( $file_path );
+	}
 
-        foreach ($files as $file_path) {
-            if (is_file($file_path)) {
-                $filename = basename($file_path);
+	/**
+	 * Generate public URL for repository file
+	 *
+	 * @param string $file_path Full filesystem path to file
+	 * @return string Public URL to file
+	 */
+	public function get_public_url( string $file_path ): string {
+		$upload_dir    = wp_upload_dir();
+		$base_url      = trailingslashit( $upload_dir['baseurl'] ) . self::REPOSITORY_DIR;
+		$relative_path = str_replace(
+			trailingslashit( $upload_dir['basedir'] ) . self::REPOSITORY_DIR,
+			'',
+			$file_path
+		);
+		return $base_url . $relative_path;
+	}
 
-                if ($filename === 'index.php') {
-                    continue;
-                }
+	/**
+	 * Store data packet as JSON file
+	 *
+	 * @param array $data Data packet array
+	 * @param int   $job_id Job ID
+	 * @param array $context Context array with pipeline/flow metadata
+	 * @return array|false Reference object on success, false on failure
+	 */
+	public function store_data_packet( array $data, int $job_id, array $context ): array|false {
+		$directory = $this->directory_manager->get_job_directory(
+			$context['pipeline_id'],
+			$context['flow_id'],
+			$job_id
+		);
 
-                $file_list[] = [
-                    'filename' => $filename,
-                    'path' => $file_path,
-                    'size' => filesize($file_path),
-                    'modified' => filemtime($file_path)
-                ];
-            }
-        }
+		if ( ! $this->directory_manager->ensure_directory_exists( $directory ) ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'FileStorage: Failed to create job directory.',
+				array(
+					'job_id' => $job_id,
+				)
+			);
+			return false;
+		}
 
-        return $file_list;
-    }
+		$file_path = "{$directory}/data.json";
 
-    /**
-     * Get all files in pipeline context directory
-     *
-     * @param int $pipeline_id Pipeline ID
-     * @param string $pipeline_name Pipeline name
-     * @return array Array of file information
-     */
-    public function get_pipeline_files(int $pipeline_id, string $pipeline_name): array {
-        $directory = $this->directory_manager->get_pipeline_context_directory($pipeline_id, $pipeline_name);
+		// Load existing data for accumulation
+		$accumulated_data = array();
+		$fs               = FilesystemHelper::get();
+		if ( $fs && file_exists( $file_path ) ) {
+			$existing_json = $fs->get_contents( $file_path );
+			if ( false !== $existing_json ) {
+				$accumulated_data = json_decode( $existing_json, true );
+				if ( ! is_array( $accumulated_data ) ) {
+					$accumulated_data = array();
+				}
+			}
+		}
 
-        if (!is_dir($directory)) {
-            return [];
-        }
+		// Merge new data (newest first)
+		if ( ! empty( $data ) ) {
+			$accumulated_data = array_merge( $data, $accumulated_data );
+		}
 
-        $files = glob("{$directory}/*");
-        $file_list = [];
+		// Serialize and write
+		$json_data = wp_json_encode( $accumulated_data, JSON_UNESCAPED_UNICODE );
+		if ( false === $json_data ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'FileStorage: Failed to encode data packet.',
+				array(
+					'job_id' => $job_id,
+				)
+			);
+			return false;
+		}
 
-        foreach ($files as $file_path) {
-            if (is_file($file_path)) {
-                $filename = basename($file_path);
+		if ( ! $fs || ! $fs->put_contents( $file_path, $json_data ) ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'FileStorage: Failed to write data packet.',
+				array(
+					'job_id'    => $job_id,
+					'file_path' => $file_path,
+				)
+			);
+			return false;
+		}
 
-                if ($filename === 'index.php') {
-                    continue;
-                }
+		return array(
+			'is_data_reference' => true,
+			'job_id'            => $job_id,
+			'file_path'         => $file_path,
+			'stored_at'         => time(),
+		);
+	}
 
-                $file_list[] = [
-                    'filename' => $filename,
-                    'path' => $file_path,
-                    'size' => filesize($file_path),
-                    'modified' => filemtime($file_path)
-                ];
-            }
-        }
+	/**
+	 * Retrieve data packet from JSON file
+	 *
+	 * @param array $reference Reference object from store_data_packet()
+	 * @return array|null Retrieved data or null on failure
+	 */
+	public function retrieve_data_packet( array $reference ): ?array {
+		if ( ! isset( $reference['is_data_reference'] ) || ! $reference['is_data_reference'] ) {
+			return $reference['data'] ?? $reference;
+		}
 
-        return $file_list;
-    }
+		$file_path = $reference['file_path'] ?? '';
 
-    /**
-     * Delete file from flow files directory
-     *
-     * @param string $filename Filename to delete
-     * @param array $context Context array with pipeline/flow metadata
-     * @return bool True on success, false on failure
-     */
-    public function delete_file(string $filename, array $context): bool {
-        $directory = $this->directory_manager->get_flow_files_directory(
-            $context['pipeline_id'],
-            $context['flow_id']
-        );
+		if ( empty( $file_path ) || ! file_exists( $file_path ) ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'FileStorage: Data packet file not found.',
+				array(
+					'file_path' => $file_path,
+				)
+			);
+			return null;
+		}
 
-        $safe_filename = sanitize_file_name($filename);
-        $file_path = "{$directory}/{$safe_filename}";
+		$fs        = FilesystemHelper::get();
+		$json_data = $fs ? $fs->get_contents( $file_path ) : false;
+		if ( false === $json_data ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'FileStorage: Failed to read data packet.',
+				array(
+					'file_path' => $file_path,
+				)
+			);
+			return null;
+		}
 
-        if (!file_exists($file_path)) {
-            return false;
-        }
+		$data = json_decode( $json_data, true );
+		if ( null === $data && json_last_error() !== JSON_ERROR_NONE ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'FileStorage: Failed to decode data packet.',
+				array(
+					'json_error' => json_last_error_msg(),
+				)
+			);
+			return null;
+		}
 
-        return wp_delete_file($file_path);
-    }
-
-    /**
-     * Generate public URL for repository file
-     *
-     * @param string $file_path Full filesystem path to file
-     * @return string Public URL to file
-     */
-    public function get_public_url(string $file_path): string {
-        $upload_dir = wp_upload_dir();
-        $base_url = trailingslashit($upload_dir['baseurl']) . self::REPOSITORY_DIR;
-        $relative_path = str_replace(
-            trailingslashit($upload_dir['basedir']) . self::REPOSITORY_DIR,
-            '',
-            $file_path
-        );
-        return $base_url . $relative_path;
-    }
-
-    /**
-     * Store data packet as JSON file
-     *
-     * @param array $data Data packet array
-     * @param int $job_id Job ID
-     * @param array $context Context array with pipeline/flow metadata
-     * @return array|false Reference object on success, false on failure
-     */
-    public function store_data_packet(array $data, int $job_id, array $context): array|false {
-        $directory = $this->directory_manager->get_job_directory(
-            $context['pipeline_id'],
-            $context['flow_id'],
-            $job_id
-        );
-
-        if (!$this->directory_manager->ensure_directory_exists($directory)) {
-            do_action('datamachine_log', 'error', 'FileStorage: Failed to create job directory.', [
-                'job_id' => $job_id
-            ]);
-            return false;
-        }
-
-        $file_path = "{$directory}/data.json";
-
-        // Load existing data for accumulation
-        $accumulated_data = [];
-        if (file_exists($file_path)) {
-            $existing_json = file_get_contents($file_path);
-            if ($existing_json !== false) {
-                $accumulated_data = json_decode($existing_json, true);
-                if (!is_array($accumulated_data)) {
-                    $accumulated_data = [];
-                }
-            }
-        }
-
-        // Merge new data (newest first)
-        if (!empty($data)) {
-            $accumulated_data = array_merge($data, $accumulated_data);
-        }
-
-        // Serialize and write
-        $json_data = wp_json_encode($accumulated_data, JSON_UNESCAPED_UNICODE);
-        if ($json_data === false) {
-            do_action('datamachine_log', 'error', 'FileStorage: Failed to encode data packet.', [
-                'job_id' => $job_id
-            ]);
-            return false;
-        }
-
-        if (file_put_contents($file_path, $json_data) === false) {
-            do_action('datamachine_log', 'error', 'FileStorage: Failed to write data packet.', [
-                'job_id' => $job_id,
-                'file_path' => $file_path
-            ]);
-            return false;
-        }
-
-        return [
-            'is_data_reference' => true,
-            'job_id' => $job_id,
-            'file_path' => $file_path,
-            'stored_at' => time()
-        ];
-    }
-
-    /**
-     * Retrieve data packet from JSON file
-     *
-     * @param array $reference Reference object from store_data_packet()
-     * @return array|null Retrieved data or null on failure
-     */
-    public function retrieve_data_packet(array $reference): ?array {
-        if (!isset($reference['is_data_reference']) || !$reference['is_data_reference']) {
-            return $reference['data'] ?? $reference;
-        }
-
-        $file_path = $reference['file_path'] ?? '';
-
-        if (empty($file_path) || !file_exists($file_path)) {
-            do_action('datamachine_log', 'error', 'FileStorage: Data packet file not found.', [
-                'file_path' => $file_path
-            ]);
-            return null;
-        }
-
-        $json_data = file_get_contents($file_path);
-        if ($json_data === false) {
-            do_action('datamachine_log', 'error', 'FileStorage: Failed to read data packet.', [
-                'file_path' => $file_path
-            ]);
-            return null;
-        }
-
-        $data = json_decode($json_data, true);
-        if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
-            do_action('datamachine_log', 'error', 'FileStorage: Failed to decode data packet.', [
-                'json_error' => json_last_error_msg()
-            ]);
-            return null;
-        }
-
-        return $data;
-    }
+		return $data;
+	}
 }

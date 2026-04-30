@@ -11,328 +11,442 @@
 
 namespace DataMachine\Engine\AI;
 
-defined('ABSPATH') || exit;
+defined( 'ABSPATH' ) || exit;
 
 class ConversationManager {
 
-    /**
-     * Build standardized conversation message structure.
-     *
-     * @param string $role Role identifier (user, assistant, system)
-     * @param string $content Message content
-     * @param array $metadata Optional metadata for the message (e.g., type, tool_data)
-     * @return array Message array with role, content, and metadata
-     */
-    public static function buildConversationMessage(string $role, string $content, array $metadata = []): array {
-        return [
-            'role' => $role,
-            'content' => $content,
-            'metadata' => array_merge(['timestamp' => gmdate('c')], $metadata)
-        ];
-    }
+	/**
+	 * Build standardized conversation message envelope.
+	 *
+	 * Content can be a plain string (text-only messages) or an array of content
+	 * blocks for multi-modal messages (text + images). When an array is provided,
+	 * each element should follow the content block format expected by AI providers:
+	 *
+	 *     [
+	 *         ['type' => 'text', 'text' => 'Describe this image'],
+	 *         ['type' => 'file', 'file_path' => '/path/to/image.jpg', 'mime_type' => 'image/jpeg'],
+	 *     ]
+	 *
+	 * The ai-http-client provider layer (Anthropic, OpenAI, Gemini, OpenRouter)
+	 * already handles array content via process_multimodal_messages().
+	 *
+	 * @since 0.2.1
+	 * @since 0.53.0 Accepts array content for multi-modal messages.
+	 *
+	 * @param string       $role     Role identifier (user, assistant, system).
+	 * @param string|array $content  Message content — string for text, array for multi-modal content blocks.
+	 * @param array        $metadata Optional metadata for the message (e.g., type, tool_data, attachments).
+	 * @return array Message envelope.
+	 */
+	public static function buildConversationMessage( string $role, $content, array $metadata = array() ): array {
+		return AgentMessageEnvelope::text( $role, $content, array_merge( array( 'timestamp' => gmdate( 'c' ) ), $metadata ) );
+	}
 
-    /**
-     * Format tool call as conversation message with turn tracking.
-     *
-     * @param string $tool_name Tool identifier
-     * @param array $tool_parameters Tool call parameters
-     * @param int $turn_count Current conversation turn (0 = no turn display)
-     * @return array Formatted assistant message
-     */
-    public static function formatToolCallMessage(string $tool_name, array $tool_parameters, int $turn_count): array {
-        $tool_display = ucwords(str_replace('_', ' ', $tool_name));
-        $message = "AI ACTION (Turn {$turn_count}): Executing {$tool_display}";
+	/**
+	 * Build multi-modal content blocks from text and attachments.
+	 *
+	 * Takes a text message and an array of attachment metadata, and produces
+	 * the content block array format expected by AI providers.
+	 *
+	 * @since 0.53.0
+	 *
+	 * @param string $text        The text portion of the message.
+	 * @param array  $attachments Array of attachment metadata, each with:
+	 *                            - url (string)        Required. Public URL of the media.
+	 *                            - file_path (string)   Optional. Local filesystem path (preferred for Anthropic file uploads).
+	 *                            - mime_type (string)   Optional. MIME type (auto-detected from URL if omitted).
+	 *                            - type (string)        Optional. 'image', 'video', or 'file'. Auto-detected from mime_type.
+	 *                            - media_id (int)       Optional. WordPress attachment ID.
+	 *                            - filename (string)    Optional. Original filename.
+	 * @return array Content blocks array suitable for buildConversationMessage().
+	 */
+	public static function buildMultiModalContent( string $text, array $attachments ): array {
+		$content_blocks = array();
 
-        if (!empty($tool_parameters)) {
-            $params_str = [];
-            foreach ($tool_parameters as $key => $value) {
-                $params_str[] = "{$key}: " . (is_string($value) ? $value : json_encode($value));
-            }
-            $message .= " with parameters: " . implode(', ', $params_str);
-        }
+		// Text block first.
+		if ( '' !== $text ) {
+			$content_blocks[] = array(
+				'type' => 'text',
+				'text' => $text,
+			);
+		}
 
-        $metadata = [
-            'type' => 'tool_call',
-            'tool_name' => $tool_name,
-            'parameters' => $tool_parameters,
-            'turn' => $turn_count
-        ];
+		foreach ( $attachments as $attachment ) {
+			$url       = $attachment['url'] ?? '';
+			$file_path = $attachment['file_path'] ?? '';
+			$mime_type = $attachment['mime_type'] ?? '';
 
-        return self::buildConversationMessage('assistant', $message, $metadata);
-    }
+			// Skip empty attachments.
+			if ( empty( $url ) && empty( $file_path ) ) {
+				continue;
+			}
 
-    /**
-     * Format tool execution result as conversation message.
-     *
-     * @param string $tool_name Tool identifier
-     * @param array $tool_result Tool execution result
-     * @param array $tool_parameters Original tool parameters
-     * @param bool $is_handler_tool Whether tool is handler-specific (affects data inclusion)
-     * @param int $turn_count Current conversation turn (0 = no turn display)
-     * @return array Formatted user message
-     */
-    public static function formatToolResultMessage(string $tool_name, array $tool_result, array $tool_parameters, bool $is_handler_tool = false, int $turn_count = 0): array {
-        $human_message = self::generateSuccessMessage($tool_name, $tool_result, $tool_parameters);
+			// Auto-detect MIME type from file path if available.
+			if ( empty( $mime_type ) && ! empty( $file_path ) && file_exists( $file_path ) ) {
+				$mime_type = mime_content_type( $file_path );
+			}
 
-        if ($turn_count > 0) {
-            $content = "TOOL RESPONSE (Turn {$turn_count}): " . $human_message;
-        } else {
-            $content = $human_message;
-        }
+			// Prefer local file path for providers that support direct file upload (Anthropic).
+			if ( ! empty( $file_path ) && file_exists( $file_path ) ) {
+				$content_blocks[] = array(
+					'type'      => 'file',
+					'file_path' => $file_path,
+					'mime_type' => $mime_type,
+				);
+			} elseif ( ! empty( $url ) ) {
+				// Fall back to URL-based image reference.
+				$content_blocks[] = array(
+					'type'      => 'image_url',
+					'image_url' => array( 'url' => $url ),
+				);
+			}
+		}
 
-        $metadata = [
-            'type' => 'tool_result',
-            'tool_name' => $tool_name,
-            'success' => $tool_result['success'] ?? false,
-            'turn' => $turn_count
-        ];
+		return $content_blocks;
+	}
 
-        if (!empty($tool_result['data'])) {
-            $metadata['tool_data'] = $tool_result['data'];
-            
-            // Still append to content for AI context, but frontend can use metadata to hide it
-            if (!$is_handler_tool) {
-                $content .= "\n\n" . json_encode($tool_result['data']);
-            }
-        }
+	/**
+	 * Format tool call as conversation message with turn tracking.
+	 *
+	 * @param string $tool_name Tool identifier
+	 * @param array  $tool_parameters Tool call parameters
+	 * @param int    $turn_count Current conversation turn (0 = no turn display)
+	 * @return array Formatted assistant message
+	 */
+	public static function formatToolCallMessage( string $tool_name, array $tool_parameters, int $turn_count ): array {
+		$tool_display = ucwords( str_replace( '_', ' ', $tool_name ) );
+		$message      = "AI ACTION (Turn {$turn_count}): Executing {$tool_display}";
 
-        if (isset($tool_result['error'])) {
-            $metadata['error'] = $tool_result['error'];
-        }
+		if ( ! empty( $tool_parameters ) ) {
+			$params_str = array();
+			foreach ( $tool_parameters as $key => $value ) {
+				$params_str[] = "{$key}: " . ( is_string( $value ) ? $value : wp_json_encode( $value ) );
+			}
+			$message .= ' with parameters: ' . implode( ', ', $params_str );
+		}
 
-        return self::buildConversationMessage('user', $content, $metadata);
-    }
+		return AgentMessageEnvelope::toolCall(
+			$message,
+			$tool_name,
+			$tool_parameters,
+			$turn_count,
+			array( 'timestamp' => gmdate( 'c' ) )
+		);
+	}
 
-    /**
-     * Generate success or failure message from tool result.
-     *
-     * @param string $tool_name Tool identifier
-     * @param array $tool_result Tool execution result
-     * @param array $tool_parameters Original tool parameters
-     * @return string Human-readable success/failure message
-     */
-    public static function generateSuccessMessage(string $tool_name, array $tool_result, array $tool_parameters): string {
-        $success = $tool_result['success'] ?? false;
-        $data = $tool_result['data'] ?? [];
+	/**
+	 * Format tool execution result as conversation message.
+	 *
+	 * @param string $tool_name Tool identifier
+	 * @param array  $tool_result Tool execution result
+	 * @param array  $tool_parameters Original tool parameters
+	 * @param bool   $is_handler_tool Whether tool is handler-specific (affects data inclusion)
+	 * @param int    $turn_count Current conversation turn (0 = no turn display)
+	 * @return array Formatted user message
+	 */
+	public static function formatToolResultMessage( string $tool_name, array $tool_result, array $tool_parameters, bool $is_handler_tool = false, int $turn_count = 0 ): array {
+		$human_message = self::generateSuccessMessage( $tool_name, $tool_result, $tool_parameters );
 
-        if (!$success) {
-            $error = $tool_result['error'] ?? 'Unknown error occurred';
-            return "TOOL FAILED: {$tool_name} execution failed - {$error}";
-        }
+		if ( $turn_count > 0 ) {
+			$content = "TOOL RESPONSE (Turn {$turn_count}): " . $human_message;
+		} else {
+			$content = $human_message;
+		}
 
-        // Use tool-provided message if available
-        if (!empty($data['message'])) {
-            $identifiers = self::extractKeyIdentifiers($data);
-            $prefix = !empty($data['already_exists']) ? 'EXISTING' : 'SUCCESS';
-            
-            if (!empty($identifiers)) {
-                return "{$prefix}: {$identifiers}\n{$data['message']}";
-            }
-            
-            return "{$prefix}: {$data['message']}";
-        }
+		$payload = array(
+			'success' => $tool_result['success'] ?? false,
+			'turn'    => $turn_count,
+		);
 
-        // Default fallback for tools without custom message
-        return "SUCCESS: " . ucwords(str_replace('_', ' ', $tool_name)) . " completed successfully.";
-    }
+		if ( ! empty( $tool_result['data'] ) ) {
+			$payload['tool_data'] = $tool_result['data'];
 
-    /**
-     * Extract key identifiers from tool result data for structured responses.
-     *
-     * @param array $data Tool result data
-     * @return string Formatted identifier string
-     */
-    private static function extractKeyIdentifiers(array $data): string {
-        $parts = [];
+			// Still append to content for AI context, but frontend can use metadata to hide it
+			if ( ! $is_handler_tool ) {
+				$content .= "\n\n" . wp_json_encode( $tool_result['data'] );
+			}
+		}
 
-        // Flow identifiers
-        if (isset($data['flow_id'])) {
-            $name = $data['flow_name'] ?? null;
-            $parts[] = $name 
-                ? "Flow \"{$name}\" (ID: {$data['flow_id']})" 
-                : "Flow ID: {$data['flow_id']}";
-        }
+		// Propagate media attachments from tool results to message metadata.
+		// Tools can include a 'media' array in their result to signal renderable
+		// media (images, videos) that the frontend should display inline.
+		if ( ! empty( $tool_result['media'] ) ) {
+			$payload['media'] = $tool_result['media'];
+		}
 
-        // Pipeline identifiers (only if no flow_id to avoid redundancy)
-        if (isset($data['pipeline_id']) && !isset($data['flow_id'])) {
-            $name = $data['pipeline_name'] ?? null;
-            $parts[] = $name 
-                ? "Pipeline \"{$name}\" (ID: {$data['pipeline_id']})" 
-                : "Pipeline ID: {$data['pipeline_id']}";
-        }
+		if ( isset( $tool_result['error'] ) ) {
+			$payload['error'] = $tool_result['error'];
+		}
 
-        // Post identifiers
-        if (isset($data['post_id'])) {
-            $parts[] = "Post ID: {$data['post_id']}";
-        }
+		return AgentMessageEnvelope::toolResult( $content, $tool_name, $payload, array( 'timestamp' => gmdate( 'c' ) ) );
+	}
 
-        // Job identifiers
-        if (isset($data['job_id'])) {
-            $parts[] = "Job ID: {$data['job_id']}";
-        }
+	/**
+	 * Generate success or failure message from tool result.
+	 *
+	 * @param string $tool_name Tool identifier
+	 * @param array  $tool_result Tool execution result
+	 * @param array  $tool_parameters Original tool parameters
+	 * @return string Human-readable success/failure message
+	 */
+	// phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Kept for callers that pass original tool params alongside result data.
+	public static function generateSuccessMessage( string $tool_name, array $tool_result, array $tool_parameters ): string {
+		$success = $tool_result['success'] ?? false;
+		$data    = $tool_result['data'] ?? array();
 
-        // Step counts
-        if (isset($data['synced_steps'])) {
-            $parts[] = "{$data['synced_steps']} steps synced";
-        }
+		if ( ! $success ) {
+			$error = $tool_result['error'] ?? 'Unknown error occurred';
+			return "TOOL FAILED: {$tool_name} execution failed - {$error}";
+		}
 
-        if (isset($data['steps_modified'])) {
-            $parts[] = "{$data['steps_modified']} steps modified";
-        }
+		// Use tool-provided message if available
+		if ( ! empty( $data['message'] ) ) {
+			$identifiers = self::extractKeyIdentifiers( $data );
+			$prefix      = ! empty( $data['already_exists'] ) ? 'EXISTING' : 'SUCCESS';
 
-        return implode(' | ', $parts);
-    }
+			if ( ! empty( $identifiers ) ) {
+				return "{$prefix}: {$identifiers}\n{$data['message']}";
+			}
 
-    /**
-     * Generate standardized failure message.
-     *
-     * @param string $tool_name Tool identifier
-     * @param string $error_message Error details
-     * @return string Formatted failure message
-     */
-    public static function generateFailureMessage(string $tool_name, string $error_message): string {
-        $tool_display = ucwords(str_replace('_', ' ', $tool_name));
-        return "TOOL FAILED: {$tool_display} execution failed - {$error_message}. Please review the error and adjust your approach if needed.";
-    }
+			return "{$prefix}: {$data['message']}";
+		}
 
-    /**
-     * Validate if a tool call is a duplicate of the previous tool call.
-     *
-     * @param string $tool_name Tool name to validate
-     * @param array $tool_parameters Tool parameters to validate
-     * @param array $conversation_messages Conversation history
-     * @return array Validation result with is_duplicate and message
-     */
-    public static function validateToolCall(string $tool_name, array $tool_parameters, array $conversation_messages): array {
-        if (empty($conversation_messages)) {
-            return ['is_duplicate' => false, 'message' => ''];
-        }
+		// Default fallback for tools without custom message
+		return 'SUCCESS: ' . ucwords( str_replace( '_', ' ', $tool_name ) ) . ' completed successfully.';
+	}
 
-        $previous_tool_call = null;
-        for ($i = count($conversation_messages) - 1; $i >= 0; $i--) {
-            $message = $conversation_messages[$i];
+	/**
+	 * Extract key identifiers from tool result data for structured responses.
+	 *
+	 * @param array $data Tool result data
+	 * @return string Formatted identifier string
+	 */
+	private static function extractKeyIdentifiers( array $data ): string {
+		$parts = array();
 
-            if ($message['role'] !== 'assistant') {
-                continue;
-            }
+		// Flow identifiers
+		if ( isset( $data['flow_id'] ) ) {
+			$name    = $data['flow_name'] ?? null;
+			$parts[] = $name
+				? "Flow \"{$name}\" (ID: {$data['flow_id']})"
+				: "Flow ID: {$data['flow_id']}";
+		}
 
-            if (($message['metadata']['type'] ?? null) !== 'tool_call') {
-                continue;
-            }
+		// Pipeline identifiers (only if no flow_id to avoid redundancy)
+		if ( isset( $data['pipeline_id'] ) && ! isset( $data['flow_id'] ) ) {
+			$name    = $data['pipeline_name'] ?? null;
+			$parts[] = $name
+				? "Pipeline \"{$name}\" (ID: {$data['pipeline_id']})"
+				: "Pipeline ID: {$data['pipeline_id']}";
+		}
 
-            $prev_tool_name = $message['metadata']['tool_name'] ?? null;
-            $prev_parameters = $message['metadata']['parameters'] ?? null;
+		// Post identifiers
+		if ( isset( $data['post_id'] ) ) {
+			$parts[] = "Post ID: {$data['post_id']}";
+		}
 
-            if (!is_string($prev_tool_name) || !is_array($prev_parameters)) {
-                continue;
-            }
+		// Job identifiers
+		if ( isset( $data['job_id'] ) ) {
+			$parts[] = "Job ID: {$data['job_id']}";
+		}
 
-            $previous_tool_call = [
-                'tool_name' => $prev_tool_name,
-                'parameters' => $prev_parameters,
-            ];
-            break;
-        }
+		// Step counts
+		if ( isset( $data['synced_steps'] ) ) {
+			$parts[] = "{$data['synced_steps']} steps synced";
+		}
 
-        if (!$previous_tool_call) {
-            return ['is_duplicate' => false, 'message' => ''];
-        }
+		if ( isset( $data['steps_modified'] ) ) {
+			$parts[] = "{$data['steps_modified']} steps modified";
+		}
 
-        $is_duplicate = ($previous_tool_call['tool_name'] === $tool_name) &&
-                       ($previous_tool_call['parameters'] === $tool_parameters);
+		return implode( ' | ', $parts );
+	}
 
-        if ($is_duplicate) {
-            $correction_message = "You just called the {$tool_name} tool with the exact same parameters as your previous action. Please try a different approach or use different parameters instead.";
-            return ['is_duplicate' => true, 'message' => $correction_message];
-        }
+	/**
+	 * Generate standardized failure message.
+	 *
+	 * @param string $tool_name Tool identifier
+	 * @param string $error_message Error details
+	 * @return string Formatted failure message
+	 */
+	public static function generateFailureMessage( string $tool_name, string $error_message ): string {
+		$tool_display = ucwords( str_replace( '_', ' ', $tool_name ) );
+		return "TOOL FAILED: {$tool_display} execution failed - {$error_message}. Please review the error and adjust your approach if needed.";
+	}
 
-        return ['is_duplicate' => false, 'message' => ''];
-    }
+	/**
+	 * Validate if a tool call is a duplicate of any previous tool call in the conversation.
+	 *
+	 * Scans the ENTIRE conversation history (not just the most recent tool call)
+	 * to catch non-consecutive duplicates. For example: AI calls upsert_event(A),
+	 * then some other tool, then upsert_event(A) again — the old logic only checked
+	 * the immediately previous call and would miss this. This broader check prevents
+	 * wasted AI credits on duplicate tool executions.
+	 *
+	 * @param string $tool_name Tool name to validate
+	 * @param array  $tool_parameters Tool parameters to validate
+	 * @param array  $conversation_messages Conversation history
+	 * @return array Validation result with is_duplicate and message
+	 */
+	public static function validateToolCall( string $tool_name, array $tool_parameters, array $conversation_messages ): array {
+		if ( empty( $conversation_messages ) ) {
+			return array(
+				'is_duplicate' => false,
+				'message'      => '',
+			);
+		}
 
-    /**
-     * Extract tool call details from a conversation message.
-     *
-     * Prefer metadata when available.
-     *
-     * @param array $message Conversation message
-     * @return array|null Tool call details or null if not a tool call message
-     */
-    public static function extractToolCallFromMessage(array $message): ?array {
-        if (($message['metadata']['type'] ?? null) === 'tool_call') {
-            $tool_name = $message['metadata']['tool_name'] ?? null;
-            $parameters = $message['metadata']['parameters'] ?? null;
+		// Scan ALL previous tool_call messages, not just the most recent one.
+		for ( $i = count( $conversation_messages ) - 1; $i >= 0; $i-- ) {
+			$message = AgentMessageEnvelope::normalize( $conversation_messages[ $i ] );
 
-            if (is_string($tool_name) && is_array($parameters)) {
-                return [
-                    'tool_name' => $tool_name,
-                    'parameters' => $parameters,
-                ];
-            }
-        }
+			if ( 'assistant' !== $message['role'] ) {
+				continue;
+			}
 
-        if ($message['role'] !== 'assistant' || !isset($message['content'])) {
-            return null;
-        }
+			if ( AgentMessageEnvelope::TYPE_TOOL_CALL !== $message['type'] ) {
+				continue;
+			}
 
-        $content = $message['content'];
+			$prev_tool_name  = $message['payload']['tool_name'] ?? null;
+			$prev_parameters = $message['payload']['parameters'] ?? null;
 
-        if (!preg_match('/AI ACTION \(Turn \d+\): Executing (.+?)(?: with parameters: (.+))?$/', $content, $matches)) {
-            return null;
-        }
+			if ( ! is_string( $prev_tool_name ) || ! is_array( $prev_parameters ) ) {
+				continue;
+			}
 
-        $tool_display_name = trim($matches[1]);
-        $tool_name = strtolower(str_replace(' ', '_', $tool_display_name));
+			if ( $prev_tool_name === $tool_name && $prev_parameters === $tool_parameters ) {
+				$correction_message = "You already called the {$tool_name} tool with these exact parameters earlier in this conversation. That call already executed successfully. Do not retry — move on to the next step or end the conversation.";
+				return array(
+					'is_duplicate' => true,
+					'message'      => $correction_message,
+				);
+			}
+		}
 
-        $parameters = [];
-        if (isset($matches[2]) && !empty($matches[2])) {
-            $params_string = $matches[2];
+		return array(
+			'is_duplicate' => false,
+			'message'      => '',
+		);
+	}
 
-            $param_pairs = explode(', ', $params_string);
-            foreach ($param_pairs as $pair) {
-                if (strpos($pair, ': ') !== false) {
-                    list($key, $value) = explode(': ', $pair, 2);
-                    $key = trim($key);
-                    $value = trim($value);
+	/**
+	 * Extract tool call details from a conversation message.
+	 *
+	 * Prefer metadata when available.
+	 *
+	 * @param array $message Conversation message
+	 * @return array|null Tool call details or null if not a tool call message
+	 */
+	public static function extractToolCallFromMessage( array $message ): ?array {
+		$envelope = AgentMessageEnvelope::normalize( $message );
 
-                    $decoded = json_decode($value, true);
-                    if (json_last_error() === JSON_ERROR_NONE) {
-                        $parameters[$key] = $decoded;
-                    } else {
-                        $parameters[$key] = $value;
-                    }
-                }
-            }
-        }
+		if ( AgentMessageEnvelope::TYPE_TOOL_CALL === $envelope['type'] ) {
+			$tool_name  = $envelope['payload']['tool_name'] ?? null;
+			$parameters = $envelope['payload']['parameters'] ?? null;
 
-        return [
-            'tool_name' => $tool_name,
-            'parameters' => $parameters
-        ];
-    }
+			if ( is_string( $tool_name ) && is_array( $parameters ) ) {
+				return array(
+					'tool_name'  => $tool_name,
+					'parameters' => $parameters,
+				);
+			}
+		}
 
-    /**
-     * Generate a tool result message for duplicate tool call prevention.
-     *
-     * @param string $tool_name Tool name that was duplicated
-     * @param int $turn_count Current conversation turn
-     * @return array Formatted tool result message
-     */
-    public static function generateDuplicateToolCallMessage(string $tool_name, int $turn_count = 0): array {
-        $tool_result = [
-            'success' => false,
-            'error' => 'Duplicate tool call - same parameters as previous action. Try a different approach.',
-        ];
+		if ( 'assistant' !== $envelope['role'] || ! isset( $envelope['content'] ) ) {
+			return null;
+		}
 
-        return self::formatToolResultMessage($tool_name, $tool_result, [], false, $turn_count);
-    }
+		$content = $envelope['content'];
+
+		if ( ! preg_match( '/AI ACTION \(Turn \d+\): Executing (.+?)(?: with parameters: (.+))?$/', $content, $matches ) ) {
+			return null;
+		}
+
+		$tool_display_name = trim( $matches[1] );
+		$tool_name         = strtolower( str_replace( ' ', '_', $tool_display_name ) );
+
+		$parameters = array();
+		if ( isset( $matches[2] ) && ! empty( $matches[2] ) ) {
+			$params_string = $matches[2];
+
+			$param_pairs = explode( ', ', $params_string );
+			foreach ( $param_pairs as $pair ) {
+				if ( strpos( $pair, ': ' ) !== false ) {
+					list($key, $value) = explode( ': ', $pair, 2 );
+					$key               = trim( $key );
+					$value             = trim( $value );
+
+					$decoded = json_decode( $value, true );
+					if ( json_last_error() === JSON_ERROR_NONE ) {
+						$parameters[ $key ] = $decoded;
+					} else {
+						$parameters[ $key ] = $value;
+					}
+				}
+			}
+		}
+
+		return array(
+			'tool_name'  => $tool_name,
+			'parameters' => $parameters,
+		);
+	}
+
+	/**
+	 * Generate a tool result message for duplicate tool call prevention.
+	 *
+	 * @param string $tool_name Tool name that was duplicated
+	 * @param int    $turn_count Current conversation turn
+	 * @return array Formatted tool result message
+	 */
+	public static function generateDuplicateToolCallMessage( string $tool_name, int $turn_count = 0 ): array {
+		$tool_result = array(
+			'success' => false,
+			'error'   => "DUPLICATE REJECTED: You already called {$tool_name} with these exact parameters earlier in this conversation and it succeeded. Do NOT call it again. Do NOT call skip_item about this. The task is done — end the conversation.",
+		);
+
+		return self::formatToolResultMessage( $tool_name, $tool_result, array(), false, $turn_count );
+	}
+
+	/**
+	 * Build a standard media entry for tool results.
+	 *
+	 * Tools that produce media (images, videos) should include a 'media'
+	 * array in their result using this format. The frontend detects media
+	 * entries in tool result metadata and renders them inline.
+	 *
+	 * Usage in a tool:
+	 *
+	 *     return [
+	 *         'success' => true,
+	 *         'media'   => [
+	 *             ConversationManager::buildMediaEntry( 'image', $url, $alt_text ),
+	 *         ],
+	 *     ];
+	 *
+	 * @since 0.53.0
+	 *
+	 * @param string $type     Media type: 'image', 'video', or 'file'.
+	 * @param string $url      Public URL of the media.
+	 * @param string $alt      Alt text or description.
+	 * @param int    $media_id Optional WordPress attachment ID.
+	 * @return array Standard media entry.
+	 */
+	public static function buildMediaEntry( string $type, string $url, string $alt = '', int $media_id = 0 ): array {
+		$entry = array(
+			'type' => $type,
+			'url'  => $url,
+		);
+
+		if ( '' !== $alt ) {
+			$entry['alt'] = $alt;
+		}
+
+		if ( $media_id > 0 ) {
+			$entry['media_id'] = $media_id;
+		}
+
+		return $entry;
+	}
 }
-
-// AI library error logging - universal handler for all AI interactions (pipeline agents, chat agents)
-add_action('chubes_ai_library_error', function($error_data) {
-    do_action('datamachine_log', 'error', 'AI Library Error: ' . $error_data['component'] . ' - ' . $error_data['message'], [
-        'component' => $error_data['component'],
-        'message' => $error_data['message'],
-        'context' => $error_data['context'],
-        'timestamp' => $error_data['timestamp']
-    ]);
-});

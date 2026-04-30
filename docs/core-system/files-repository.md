@@ -7,8 +7,13 @@ The FilesRepository is a modular component system for file operations in the Dat
 ## Architecture
 
 **Location**: `/inc/Core/FilesRepository/`
-**Components**: 6 specialized classes
 **Since**: 0.2.1
+
+The repository covers two responsibility groups:
+
+- **Flow file primitives** — `DirectoryManager`, `FileStorage`, `FileRetrieval`, `FileCleanup`, `RemoteFileDownloader`, `FilesystemHelper`
+- **Validation primitives** — `ImageValidator`, `MediaValidator`, `VideoValidator`, `VideoMetadata`
+- **Agent memory primitives** — `AgentMemory`, `AgentMemoryStoreInterface`, `AgentMemoryStoreFactory`, `DiskAgentMemoryStore`, `AgentMemoryScope`, `AgentMemoryReadResult`, `AgentMemoryWriteResult`, `AgentMemoryListEntry`, `DailyMemory`, `DailyMemoryStorage`
 
 ## Components
 
@@ -31,7 +36,6 @@ $job_dir = $dir_manager->get_job_directory($pipeline_id, $flow_id, $job_id);
 - `get_flow_directory($pipeline_id, $flow_id)`: Get flow directory
 - `get_job_directory($pipeline_id, $flow_id, $job_id)`: Get job directory
 - `get_flow_files_directory($pipeline_id, $flow_id)`: Get flow file storage directory
-- `get_pipeline_context_directory($pipeline_id, $pipeline_name)`: Get pipeline context directory
 - `ensure_directory_exists($directory)`: Create directory if it does not exist
 
 ### FileStorage
@@ -43,15 +47,16 @@ $job_dir = $dir_manager->get_job_directory($pipeline_id, $flow_id, $job_id);
 use DataMachine\Core\FilesRepository\FileStorage;
 
 $storage = new FileStorage();
-$stored_path = $storage->store_file($content, $filename, $job_id);
-$file_content = $storage->get_file_content($filename, $job_id);
+$context = [
+    'pipeline_id' => $pipeline_id,
+    'flow_id' => $flow_id,
+];
+$stored_path = $storage->store_file($source_path, $filename, $context);
 ```
 
 **Key Methods**:
 - `store_file($source_path, $filename, $context)`: Copy a local file into flow file storage
-- `store_pipeline_file($pipeline_id, $pipeline_name, $file_data)`: Store a pipeline context file
 - `get_all_files($context)`: List files for a flow
-- `get_pipeline_files($pipeline_id, $pipeline_name)`: List pipeline context files
 - `delete_file($filename, $context)`: Delete a stored file
 - `store_data_packet($data, $job_id, $context)`: Persist step data for a job
 - `retrieve_data_packet($reference)`: Read a persisted data packet
@@ -105,18 +110,21 @@ if ($validation['valid']) {
 use DataMachine\Core\FilesRepository\RemoteFileDownloader;
 
 $downloader = new RemoteFileDownloader();
-$result = $downloader->download_and_store($url, $job_id);
+$context = [
+    'pipeline_id' => $pipeline_id,
+    'flow_id' => $flow_id,
+];
+$result = $downloader->download_remote_file($url, $filename, $context);
 
-if ($result['success']) {
+if ($result) {
     $local_path = $result['path'];
-    $filename = $result['filename'];
+    $stored_filename = $result['filename'];
+    $file_url = $result['url'];
 }
 ```
 
 **Key Methods**:
-- `download_and_store($url, $job_id)`: Download and store remote file
-- `validate_remote_file($url)`: Validate remote file before download
-- `get_file_info_from_url($url)`: Extract filename and extension from URL
+- `download_remote_file($url, $filename, $context, $options)`: Download remote file and store in flow files directory
 
 ### FileRetrieval
 
@@ -150,21 +158,22 @@ $file_data = $file_retrieval->retrieve_data_by_job_id($job_id, [
 
 Components work together for complete file handling:
 
-> Note: When mapping flow_step_id -> flow_id, the REST API uses `datamachine_get_flow_id_from_step` filter (see datamachine/inc/Api/Files.php:168). Implement this filter when connecting flow-step-aware file operations from extensions.
+> Note: When mapping flow_step_id -> flow_id, the REST API uses `datamachine_get_flow_id_from_step` filter (see datamachine/inc/Api/FlowFiles.php). Implement this filter when connecting flow-step-aware file operations from extensions.
 
 ```php
-use DataMachine\Core\FilesRepository\{
-    DirectoryManager,
-    FileStorage,
-    ImageValidator,
-    RemoteFileDownloader
-};
+use DataMachine\Core\FilesRepository\RemoteFileDownloader;
+use DataMachine\Core\FilesRepository\ImageValidator;
+use DataMachine\Core\FilesRepository\DirectoryManager;
 
 // Download and validate image
 $downloader = new RemoteFileDownloader();
-$result = $downloader->download_and_store($image_url, $job_id);
+$context = [
+    'pipeline_id' => $pipeline_id,
+    'flow_id' => $flow_id,
+];
+$result = $downloader->download_remote_file($image_url, $filename, $context);
 
-if ($result['success']) {
+if ($result) {
     $validator = new ImageValidator();
     $validation = $validator->validate_image_file($result['path']);
 

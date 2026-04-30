@@ -1,215 +1,319 @@
 # AI Directives System
 
-Data Machine uses a hierarchical directive system to provide contextual information to AI agents during conversation and workflow execution. Directives are injected into AI requests in priority order, ensuring consistent behavior and context across all interactions.
+Data Machine uses a hierarchical directive system to inject contextual information into AI requests. Directives self-register via the `datamachine_directives` filter, are sorted by priority, filtered by mode, validated, and rendered into system messages before the conversation messages.
 
 ## Directive Architecture
 
-### 5-Tier Priority System
+All directives implement `DirectiveInterface`, which defines a single static method:
 
-Directives are applied in the following priority order (lowest number = highest priority):
+```php
+public static function get_outputs(
+    string $provider_name,
+    array $tools,
+    ?string $step_id = null,
+    array $payload = array()
+): array;
+```
 
-1. **Priority 10** - Plugin Core Directive (agent identity)
-2. **Priority 15** - Chat Agent Directive (chat-specific identity)
-3. **Priority 20** - Global System Prompt (global AI behavior)
-4. **Priority 30** - Pipeline System Prompt (pipeline instructions)
-5. **Priority 35** - Pipeline Context Files (reference materials)
-6. **Priority 40** - Tool Definitions (available tools and workflow)
-7. **Priority 45** - Chat Pipelines Inventory (pipeline discovery)
-8. **Priority 50** - Site Context (WordPress metadata)
+Each directive self-registers via the `datamachine_directives` filter, appending an array with `class`, `priority`, and `modes` keys.
+
+### Output Types
+
+Directive outputs are validated by `DirectiveOutputValidator`:
+
+- **`system_text`** — requires `content` (string). Rendered as `{role: 'system', content: ...}`.
+- **`system_json`** — requires `label` (string) and `data` (array). Rendered as `{role: 'system', content: "LABEL:\n\n{json}"}`.
+- **`system_file`** — requires `file_path` and `mime_type`. Rendered as a file attachment in the system message.
+
+### Modes
+
+Each registered directive declares which agent **modes** it applies to via the `modes` array. The current built-in modes are `chat`, `pipeline`, and `system`. The literal string `all` matches every mode.
+
+> Historical note: prior to v0.71.0 this field was named `contexts`. The internal terminology was renamed during the AgentMode refactor (#1130). RequestBuilder reads `$directive['modes']`; older `'contexts' =>` registrations are silently treated as `all` because they don't match the canonical key.
+
+### Priority System
+
+Directives are applied in ascending priority order (lowest number = highest priority).
+
+| Priority | Directive | Modes | Source | Purpose |
+|----------|-----------|-------|--------|---------|
+| **20** | `CoreMemoryFilesDirective` | all | `inc/Engine/AI/Directives/CoreMemoryFilesDirective.php` | SITE.md, RULES.md, SOUL.md, MEMORY.md, USER.md, custom registered files |
+| **22** | `AgentModeDirective` | all | `inc/Engine/AI/Directives/AgentModeDirective.php` | Mode-specific guidance (chat / pipeline / system) injected as runtime directive |
+| **25** | `CallerContextDirective` | all (cross-site only) | `inc/Engine/AI/Directives/CallerContextDirective.php` | Authenticated A2A caller identity (peer agent slug, host, chain depth) |
+| **35** | `AgentDailyMemoryDirective` | chat, pipeline | `inc/Engine/AI/Directives/AgentDailyMemoryDirective.php` | Recent daily archives for agents that opt in via `agent_config.daily_memory` |
+| **35** | `ClientContextDirective` | all | `inc/Engine/AI/Directives/ClientContextDirective.php` | Free-form client-reported context (current screen, post being edited, etc.) |
+| **40** | `PipelineMemoryFilesDirective` | pipeline | `inc/Core/Steps/AI/Directives/PipelineMemoryFilesDirective.php` | Per-pipeline selectable memory files |
+| **45** | `ChatPipelinesDirective` | chat | `inc/Api/Chat/ChatPipelinesDirective.php` | Pipeline / flow / handler inventory for discovery |
+| **45** | `FlowMemoryFilesDirective` | pipeline | `inc/Core/Steps/AI/Directives/FlowMemoryFilesDirective.php` | Per-flow selectable memory files (additive to pipeline memory) |
+| **50** | `PipelineSystemPromptDirective` | pipeline | `inc/Core/Steps/AI/Directives/PipelineSystemPromptDirective.php` | User-configured task instructions + workflow visualization |
+
+> Note: Tools are injected by `RequestBuilder` via `PromptBuilder::setTools()`, not as a directive class. The earlier `GlobalSystemPromptDirective`, `SiteContextDirective`, `PipelineCoreDirective`, `ChatAgentDirective`, and `SystemAgentDirective` classes were removed during the AgentMode refactor — their guidance now lives inline in `AgentModeDirective` and in agent memory files (SITE.md, SOUL.md, MEMORY.md).
 
 ## Individual Directives
 
-### ChatAgentDirective (Priority 15)
+### CoreMemoryFilesDirective (Priority 20)
 
-**Location**: `inc/Api/Chat/ChatAgentDirective.php`  
-**Agent Types**: Chat only  
-**Purpose**: Defines chat agent identity and capabilities
+**Source**: `inc/Engine/AI/Directives/CoreMemoryFilesDirective.php`
+**Modes**: All
+**Since**: 0.30.0
 
-Provides the foundational system prompt for chat interactions, establishing the agent's role in helping users configure and manage Data Machine workflows.
+Reads core memory files from three directory layers and injects them as system messages:
 
-### ChatPipelinesDirective (Priority 45)
+**Site layer** (shared):
+- `SITE.md` — Site identity and configuration
+- `RULES.md` — Global rules and constraints
 
-**Location**: `inc/Api/Chat/ChatPipelinesDirective.php`  
-**Agent Types**: Chat only  
-**Purpose**: Injects pipeline inventory and flow summaries
+**Agent layer** (per-agent):
+- `SOUL.md` — Agent personality and behavioral guidelines
+- `MEMORY.md` — Agent long-term memory
 
-Provides a lightweight inventory of all pipelines, including their configured steps and flow summaries (active handlers).
+**User layer** (per-user):
+- `USER.md` — User-specific preferences and context
 
-**Context Awareness**:
-When `selected_pipeline_id` is provided (e.g., from the Integrated Chat Sidebar), the agent prioritizes and expands context for that specific pipeline, enabling it to learn from established configuration patterns and provide targeted assistance.
-
-### GlobalSystemPromptDirective (Priority 20)
-
-**Location**: `inc/Engine/AI/Directives/GlobalSystemPromptDirective.php`  
-**Agent Types**: All agents  
-**Purpose**: Injects user-configured global AI behavior
-
-Adds a system message containing the `global_system_prompt` setting from plugin configuration. This directive sets the overall tone, personality, and behavioral guidelines for ALL AI interactions across the entire system.
-
-**Configuration**: Set via `global_system_prompt` in plugin settings.
-
-### PipelineContextDirective (Priority 35)
-
-**Location**: `inc/Core/Steps/AI/Directives/PipelineContextDirective.php`  
-**Agent Types**: Pipeline agents  
-**Purpose**: Provides pipeline-specific reference materials
-
-Injects uploaded context files from pipeline configurations as file attachments in AI requests. Each file is added as a system message with proper MIME type handling.
+**Custom registered files** — Any additional files registered via `MemoryFileRegistry` are also loaded from the agent directory.
 
 **Features**:
-- Retrieves context files from pipeline configuration
-- Validates file existence before injection
-- Supports multiple file formats
-- Logs injection activity for debugging
+- Self-healing: calls `DirectoryManager::ensure_agent_files()` before reading.
+- Three-layer directory resolution via `DirectoryManager`.
+- File size warning logged when any file exceeds `AgentMemory::MAX_FILE_SIZE` (8KB).
+- Empty files are silently skipped.
 
-### SiteContextDirective (Priority 50)
+**Configuration**: Edit files via the Agent admin page file browser or REST API (`PUT /datamachine/v1/files/agent/{filename}`).
 
-**Location**: `inc/Engine/AI/Directives/SiteContextDirective.php`  
-**Agent Types**: All agents  
-**Purpose**: Provides comprehensive WordPress site metadata
+### AgentModeDirective (Priority 22)
 
-Injects structured JSON data about the WordPress site including post types, taxonomies, terms, and site configuration. This is the final directive in the hierarchy, providing complete site context for AI decision-making.
+**Source**: `inc/Engine/AI/Directives/AgentModeDirective.php`
+**Modes**: All
+**Since**: 0.68.0 (replaced per-agent context files in #1129/#1130)
 
-**Features**:
-- Cached site metadata for performance
-- Automatic cache invalidation on content changes
-- Toggleable via `site_context_enabled` setting
-- Extensible through `datamachine_site_context` filter
+Injects execution-mode guidance (chat, pipeline, system) as a runtime directive rather than per-agent disk files. Mode guidance is platform knowledge, not agent-specific state — shipping it as a directive removes per-agent disk clutter and enables hook-based composition.
 
-## Site Context Data Structure
+**Built-in modes**:
+- `chat` — Live chat session in the admin UI. Includes Data Machine architecture overview, configuration rules, scheduling rules, and execution protocol.
+- `pipeline` — Automated pipeline step execution. Includes data packet structure and analysis-before-action principles.
+- `system` — Background system task execution. Includes session title generation rules and "return only what's asked" behavior.
 
-The site context directive provides the following structured data:
+**Extension hook**: `datamachine_agent_mode_{slug}` — extensions can append or modify mode-specific guidance for a given mode (e.g. the editor plugin appends diff workflow instructions when the `editor` mode is active).
+
+**Payload key**: Reads `agent_mode` from the request payload.
+
+### CallerContextDirective (Priority 25)
+
+**Source**: `inc/Engine/AI/Directives/CallerContextDirective.php`
+**Modes**: All — but only emits output during cross-site A2A calls
+**Since**: 0.72.0
+
+Renders authenticated agent-to-agent caller identity from the four cross-site headers (`X-Datamachine-Caller-Site`, `-Caller-Agent`, `-Chain-Id`, `-Chain-Depth`). The data is server-validated — it cannot be spoofed by the client because the headers are read from the incoming HTTP request and validated by middleware.
+
+When `PermissionHelper::in_cross_site_context()` returns false (local request, top of chain), the directive emits nothing. Distinct from `ClientContextDirective`: caller context is trusted server-side provenance; client context is untrusted frontend state.
+
+### AgentDailyMemoryDirective (Priority 35)
+
+**Source**: `inc/Engine/AI/Directives/AgentDailyMemoryDirective.php`
+**Modes**: chat, pipeline
+**Since**: 0.71.0
+
+Injects recent daily archive files for agents that explicitly opt in. Replaces the former `DailyMemorySelectorDirective` + per-flow `flow_config.daily_memory` config.
+
+**Opt-in shape (per agent, in `agent_config`):**
 
 ```json
 {
-  "site": {
-    "name": "Site Title",
-    "tagline": "Site Description",
-    "url": "https://example.com",
-    "admin_url": "https://example.com/wp-admin",
-    "language": "en_US",
-    "timezone": "America/New_York"
-  },
-  "post_types": {
-    "post": {
-      "label": "Posts",
-      "singular_label": "Post",
-      "count": 150,
-      "hierarchical": false
-    }
-  },
-  "taxonomies": {
-    "category": {
-      "label": "Categories",
-      "singular_label": "Category",
-      "terms": {
-        "news": 45,
-        "updates": 23
-      },
-      "hierarchical": true,
-      "post_types": ["post"]
-    }
+  "daily_memory": {
+    "enabled":     true,
+    "recent_days": 3
   }
 }
 ```
+
+When disabled or absent the directive emits nothing — a stateless pipeline agent (alt-text generator, wiki builder) gets zero daily memory noise in its context. When enabled, the directive walks the real files on disk (`agents/{slug}/daily/YYYY/MM/DD.md`) from newest to oldest, injecting each as its own `system_text` block labelled `"## Daily Memory: YYYY-MM-DD"`.
+
+**Features**:
+- Opt-in per agent — default off for every agent.
+- `recent_days` default 3, hard ceiling 14 (`MAX_RECENT_DAYS`).
+- Size-bounded by `AgentMemory::MAX_FILE_SIZE` (8 KB); older days dropped first when the budget would be exceeded.
+- One real file = one `system_text` block so the AI can distinguish dates rather than reasoning over a stitched-together blob.
+- Precise historical lookups still available via the `agent_daily_memory` tool.
+
+### ClientContextDirective (Priority 35)
+
+**Source**: `inc/Engine/AI/Directives/ClientContextDirective.php`
+
+Renders free-form context reported by the calling client. Examples:
+
+- `{ "tab": "compose", "post_id": 123, "post_title": "My Draft" }` — Gutenberg sidebar
+- `{ "screen": "socials", "platform": "instagram" }` — Socials admin page
+- `{ "page": "forum", "topic_id": 42 }` — community page
+
+The payload is **untrusted** — it represents what the frontend says it is showing. Pair it with `CallerContextDirective` (priority 25) when authoritative provenance matters.
+
+### PipelineMemoryFilesDirective (Priority 40)
+
+**Source**: `inc/Core/Steps/AI/Directives/PipelineMemoryFilesDirective.php`
+**Modes**: Pipeline only
+
+Reads the pipeline's `memory_files` configuration (an array of filenames) and injects each file's content from the agent directory as a system message prefixed with `## Memory File: {filename}`.
+
+**Features**:
+- Files sourced from the agent's memory directory (`wp-content/uploads/datamachine-files/agents/{agent_slug}/`).
+- Missing files logged as warnings but don't fail the request.
+- Empty files are silently skipped.
+- Supports multi-agent partitioning via `user_id` and `agent_id` from payload.
+- Uses the shared `MemoryFilesReader` helper.
+
+**Configuration**: Select memory files per-pipeline via the "Agent Memory Files" section in the pipeline settings UI. SOUL.md is excluded from the picker — it's always injected by `CoreMemoryFilesDirective` (Priority 20).
+
+### ChatPipelinesDirective (Priority 45)
+
+**Source**: `inc/Api/Chat/ChatPipelinesDirective.php`
+**Modes**: Chat only
+
+Provides a lightweight JSON inventory of all pipelines, their steps, and flow summaries (active handlers), labeled `"DATAMACHINE PIPELINES INVENTORY"`.
+
+**Context awareness**: When `selected_pipeline_id` is provided (e.g. from the Integrated Chat Sidebar), the agent prioritizes context for that specific pipeline.
+
+### FlowMemoryFilesDirective (Priority 45)
+
+**Source**: `inc/Core/Steps/AI/Directives/FlowMemoryFilesDirective.php`
+**Modes**: Pipeline only
+
+Reads the flow's `memory_files` configuration and injects each file's content. Different flows on the same pipeline can reference different memory files.
+
+**Features**:
+- Additive to pipeline memory files (Priority 40), not a replacement.
+- Uses the shared `MemoryFilesReader` helper.
+- Supports multi-agent partitioning.
+
+### PipelineSystemPromptDirective (Priority 50)
+
+**Source**: `inc/Core/Steps/AI/Directives/PipelineSystemPromptDirective.php`
+**Modes**: Pipeline only
+
+Two parts:
+
+1. **Workflow visualization** — Compact string showing step sequence with "YOU ARE HERE" marker:
+   ```
+   WORKFLOW: REDDIT FETCH -> AI (YOU ARE HERE) -> WORDPRESS PUBLISH
+   ```
+
+2. **Pipeline goals** — The `system_prompt` text from the pipeline step configuration, prefixed with `"PIPELINE GOALS:\n"`.
+
+**Features**:
+- Returns empty if no `system_prompt` is configured.
+- Provides spatial awareness (where in the pipeline the AI currently sits).
+- Multi-handler steps shown as `"LABEL1+LABEL2 STEPTYPE"`.
 
 ## Directive Injection Process
 
 ### Request Flow
 
-1. **Request Building**: `RequestBuilder` initiates AI request construction
-2. **Directive Collection**: `PromptBuilder` gathers all registered directives
-3. **Priority Sorting**: Directives sorted by priority (ascending)
-4. **Agent Filtering**: Only directives matching current agent type are applied
-5. **Sequential Injection**: Each directive injects its content into the messages array
-6. **Final Request**: Complete request sent to AI provider
+1. **Request Building**: `RequestBuilder` initiates AI request construction.
+2. **Directive Collection**: Gathers all registered directives via `apply_filters('datamachine_directives', [])`.
+3. **Priority Sorting**: `PromptBuilder` sorts directives by priority (ascending).
+4. **Mode Filtering**: Only directives matching the current `mode` are applied (`'all'` matches everything).
+5. **Output Generation**: Each directive's `get_outputs()` is called.
+6. **Validation**: `DirectiveOutputValidator` ensures outputs follow expected schema.
+7. **Rendering**: `DirectiveRenderer` converts validated outputs into `{role: 'system', content: ...}` messages.
+8. **Final Request**: System messages are prepended before conversation messages.
 
-### Message Ordering
+### Mode-Specific Stacks
 
-Directives maintain consistent message ordering by using `array_push()` to append system messages. This ensures:
-- Core directives appear first
-- Context accumulates predictably
-- Tool definitions and site context appear last
+**Chat agents** receive (in order):
+
+1. P20 — CoreMemoryFilesDirective
+2. P22 — AgentModeDirective (chat guidance)
+3. P25 — CallerContextDirective (cross-site only)
+4. P35 — AgentDailyMemoryDirective (opt-in per agent)
+5. P35 — ClientContextDirective
+6. P45 — ChatPipelinesDirective
+7. (Tools are injected separately by RequestBuilder)
+
+**Pipeline agents** receive (in order):
+
+1. P20 — CoreMemoryFilesDirective
+2. P22 — AgentModeDirective (pipeline guidance)
+3. P25 — CallerContextDirective (cross-site only)
+4. P35 — AgentDailyMemoryDirective (opt-in per agent)
+5. P35 — ClientContextDirective
+6. P40 — PipelineMemoryFilesDirective
+7. P45 — FlowMemoryFilesDirective
+8. P50 — PipelineSystemPromptDirective
+
+**System agents** receive (in order):
+
+1. P20 — CoreMemoryFilesDirective
+2. P22 — AgentModeDirective (system guidance)
+3. P25 — CallerContextDirective (cross-site only)
+4. P35 — ClientContextDirective
+
+System agents do not receive `AgentDailyMemoryDirective` (its registered modes are `chat` and `pipeline` only) and do not receive any pipeline-only memory directives.
 
 ## Configuration & Extensibility
 
 ### Plugin Settings Integration
 
-Several directives integrate with plugin settings:
-
-- **Global System Prompt**: `global_system_prompt` setting
-- **Site Context**: `site_context_enabled` toggle
+- **Agent memory files**: File-based in agent memory directory (migrated from `global_system_prompt`).
+- **Pipeline memory files**: Per-pipeline `memory_files` array in pipeline config.
+- **Flow memory files**: Per-flow `memory_files` array in flow config.
+- **Daily memory**: Per-agent `agent_config.daily_memory = { enabled: bool, recent_days: int }`. Default disabled.
 
 ### Filter Hooks
 
-**`datamachine_directives`**: Register new directives
-```php
-$directives[] = [
-    'class' => 'My\Directive\Class',
-    'priority' => 25,
-    'agent_types' => ['chat', 'pipeline', 'all']
-];
-```
+**`datamachine_directives`** — Register a new directive:
 
-**`datamachine_site_context`**: Extend site context data
 ```php
-add_filter('datamachine_site_context', function($context) {
-    $context['custom_data'] = get_my_custom_data();
-    return $context;
+add_filter('datamachine_directives', function($directives) {
+    $directives[] = [
+        'class'    => MyDirective::class,
+        'priority' => 25,
+        'modes'    => ['chat', 'pipeline'], // or ['all']
+    ];
+    return $directives;
 });
 ```
 
-**`datamachine_site_context_directive`**: Override site context directive class
+**`datamachine_agent_mode_{slug}`** — Append or modify mode-specific guidance:
+
 ```php
-add_filter('datamachine_site_context_directive', function($class) {
-    return 'My\Custom\SiteContextDirective::class';
-});
+add_filter('datamachine_agent_mode_chat', function($content, $payload) {
+    return $content . "\n\n# Plugin extension\n\nExtra rules for this site.";
+}, 10, 2);
 ```
 
 ## Performance Considerations
 
 ### Caching Strategy
 
-- **Site Context**: Cached with automatic invalidation on content changes
-- **Global Prompts**: Retrieved directly from settings (no caching needed)
-- **Pipeline Context**: Files validated on each request (no caching)
+- **Memory files**: Read from filesystem on each request (no caching).
+- **Pipeline inventory**: Queried from database on each chat request.
 
-### Cache Invalidation Triggers
+## Support Infrastructure
 
-Site context cache clears automatically when:
-- Posts are created, updated, or deleted
-- Terms are created, edited, or deleted
-- Users are registered or deleted
-- Theme is switched
-- Site options (name, description, URL) change
+| File | Purpose |
+|------|---------|
+| `DirectiveInterface.php` | Contract: `get_outputs()` static method |
+| `DirectiveOutputValidator.php` | Validates output arrays per type requirements |
+| `DirectiveRenderer.php` | Converts validated outputs to `{role: 'system', content: ...}` messages |
+| `MemoryFilesReader.php` | Shared helper for reading memory files from agent directory |
+| `MemoryFileRegistry.php` | Static registry for custom memory file registration |
+| `PromptBuilder.php` | Sorts, filters, calls, validates, renders directives |
+| `RequestBuilder.php` | Entry point: collects directives, feeds into PromptBuilder, sends request |
 
 ## Debugging & Monitoring
 
 ### Logging Integration
 
-All directives integrate with the Data Machine logging system:
+Directives integrate with the Data Machine logging system:
 
 ```php
-do_action('datamachine_log', 'debug', 'Directive: Context files injected', [
+do_action('datamachine_log', 'debug', 'Directive: Memory files injected', [
     'pipeline_id' => $pipeline_id,
-    'file_count' => count($files)
+    'file_count'  => count($files),
 ]);
 ```
 
 ### Error Handling
 
-Directives include comprehensive error handling:
-- File existence validation for context files
-- Empty content detection and logging
-- Graceful degradation when optional features fail
-
-## Agent-Specific Behavior
-
-### Pipeline Agents
-Receive directives: Core (10), Global Prompt (20), Pipeline Prompt (30), Pipeline Context (35), Tools (40), Site Context (50)
-
-### Chat Agents
-Receive directives: Core (10), Chat Agent (15), Global Prompt (20), Tools (40), Chat Pipelines (45), Site Context (50)
-
-### Universal Directives
-Global Prompt (20) and Site Context (50) apply to all agent types, ensuring consistent behavior across the system.
+- Empty content detection and logging.
+- Graceful degradation when optional features fail.
+- File size warnings for oversized memory files.

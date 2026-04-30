@@ -4,133 +4,109 @@
  * Complete section for managing pipeline context files with upload and table display.
  */
 
-import { useState, useEffect } from '@wordpress/element';
+/**
+ * WordPress dependencies
+ */
+import { useState } from '@wordpress/element';
 import { Notice } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import {
-	fetchContextFiles,
-	uploadContextFile,
-	deleteContextFile,
-} from '../../utils/api';
+	useContextFiles,
+	useUploadContextFile,
+	useDeleteContextFile,
+} from '../../queries/pipelines';
 import FileUploadDropzone from '../shared/FileUploadDropzone';
 import ContextFilesTable from './context-files/ContextFilesTable';
 
 /**
  * Pipeline Context Files Section Component
  *
- * @param {Object} props - Component props
+ * @param {Object} props            - Component props
  * @param {number} props.pipelineId - Pipeline ID
- * @returns {React.ReactElement} Context files section
+ * @return {React.ReactElement} Context files section
  */
 export default function PipelineContextFiles( { pipelineId } ) {
-	const [ files, setFiles ] = useState( [] );
-	const [ loading, setLoading ] = useState( true );
-	const [ uploading, setUploading ] = useState( false );
-	const [ deleting, setDeleting ] = useState( false );
-	const [ error, setError ] = useState( null );
 	const [ success, setSuccess ] = useState( null );
+	const [ error, setError ] = useState( null );
 
-	/**
-	 * Load context files
-	 */
-	const loadFiles = async () => {
-		setLoading( true );
-		setError( null );
+	const {
+		data: files = [],
+		isLoading: loading,
+	} = useContextFiles( pipelineId );
 
-		try {
-			const response = await fetchContextFiles( pipelineId );
+	const uploadMutation = useUploadContextFile();
+	const deleteMutation = useDeleteContextFile();
 
-			if ( response.success ) {
-				setFiles( response.data || [] );
-			} else {
-				setError(
-					response.message ||
-						__( 'Failed to load context files', 'datamachine' )
-				);
-			}
-		} catch ( err ) {
-			console.error( 'Load files error:', err );
-			setError(
-				err.message ||
-					__( 'An error occurred while loading files', 'datamachine' )
-			);
-		} finally {
-			setLoading( false );
-		}
-	};
-
-	/**
-	 * Load files on mount and when pipeline changes
-	 */
-	useEffect( () => {
-		if ( pipelineId ) {
-			loadFiles();
-		}
-	}, [ pipelineId ] );
+	const uploading = uploadMutation.isPending;
+	const deleting = deleteMutation.isPending;
 
 	/**
 	 * Handle file upload
+	 *
+	 * @param {File} file - File to upload
 	 */
 	const handleFileSelected = async ( file ) => {
-		setUploading( true );
 		setError( null );
 		setSuccess( null );
 
 		try {
-			const response = await uploadContextFile( pipelineId, file );
+			const response = await uploadMutation.mutateAsync( {
+				pipelineId,
+				file,
+			} );
 
 			if ( response.success ) {
 				setSuccess(
-					__( 'File uploaded successfully!', 'datamachine' )
+					__( 'File uploaded successfully!', 'data-machine' )
 				);
-				// Reload files list
-				await loadFiles();
 			} else {
 				setError(
 					response.message ||
-						__( 'Failed to upload file', 'datamachine' )
+						__( 'Failed to upload file', 'data-machine' )
 				);
 			}
 		} catch ( err ) {
+			// eslint-disable-next-line no-console
 			console.error( 'Upload error:', err );
 			setError(
 				err.message ||
-					__( 'An error occurred during upload', 'datamachine' )
+					__( 'An error occurred during upload', 'data-machine' )
 			);
-		} finally {
-			setUploading( false );
 		}
 	};
 
 	/**
 	 * Handle file deletion
+	 *
+	 * @param {string} fileId - File ID to delete
 	 */
 	const handleDelete = async ( fileId ) => {
-		setDeleting( true );
 		setError( null );
 		setSuccess( null );
 
 		try {
-			const response = await deleteContextFile( fileId );
+			const response = await deleteMutation.mutateAsync( fileId );
 
 			if ( response.success ) {
-				setSuccess( __( 'File deleted successfully!', 'datamachine' ) );
-				// Reload files list
-				await loadFiles();
+				setSuccess(
+					__( 'File deleted successfully!', 'data-machine' )
+				);
 			} else {
 				setError(
 					response.message ||
-						__( 'Failed to delete file', 'datamachine' )
+						__( 'Failed to delete file', 'data-machine' )
 				);
 			}
 		} catch ( err ) {
+			// eslint-disable-next-line no-console
 			console.error( 'Delete error:', err );
 			setError(
 				err.message ||
-					__( 'An error occurred during deletion', 'datamachine' )
+					__( 'An error occurred during deletion', 'data-machine' )
 			);
-		} finally {
-			setDeleting( false );
 		}
 	};
 
@@ -144,12 +120,12 @@ export default function PipelineContextFiles( { pipelineId } ) {
 						fontWeight: '600',
 					} }
 				>
-					{ __( 'Context Files', 'datamachine' ) }
+					{ __( 'Context Files', 'data-machine' ) }
 				</h3>
 				<p className="datamachine-context-files-helper">
 					{ __(
 						'Upload files for AI context retrieval during pipeline execution.',
-						'datamachine'
+						'data-machine'
 					) }
 				</p>
 			</div>
@@ -178,10 +154,14 @@ export default function PipelineContextFiles( { pipelineId } ) {
 				<FileUploadDropzone
 					onFileSelected={ handleFileSelected }
 					allowedTypes={ [ 'pdf', 'csv', 'txt', 'json' ] }
-					maxSizeMB={ Math.round((window.dataMachineConfig?.maxUploadSize || 10485760) / (1024 * 1024)) }
+					maxSizeMB={ Math.round(
+						( window.dataMachineConfig?.maxUploadSize ||
+							10485760 ) /
+							( 1024 * 1024 )
+					) }
 					disabled={ uploading || loading }
 					uploadText={
-						uploading ? __( 'Uploading...', 'datamachine' ) : null
+						uploading ? __( 'Uploading…', 'data-machine' ) : null
 					}
 				/>
 			</div>
@@ -194,7 +174,7 @@ export default function PipelineContextFiles( { pipelineId } ) {
 						color: '#757575',
 					} }
 				>
-					{ __( 'Loading files...', 'datamachine' ) }
+					{ __( 'Loading files…', 'data-machine' ) }
 				</div>
 			) : (
 				<ContextFilesTable

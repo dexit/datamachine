@@ -2,360 +2,301 @@
 /**
  * Unified execution endpoint for database flows and ephemeral workflows.
  *
+ * Routes database flows to datamachine/run-flow (immediate) or
+ * datamachine/schedule-flow (delayed). Ephemeral workflows go to
+ * datamachine/execute-workflow.
+ *
  * @package DataMachine\Api
  */
 
 namespace DataMachine\Api;
 
-use DataMachine\Services\StepTypeService;
+use DataMachine\Abilities\PermissionHelper;
 
-if (!defined('ABSPATH')) {
-    exit;
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
 }
 
 class Execute {
 
-    /**
-     * Initialize REST API hooks
-     */
-    public static function register() {
-        add_action('rest_api_init', [self::class, 'register_routes']);
-    }
+	/**
+	 * Initialize REST API hooks
+	 */
+	public static function register() {
+		add_action( 'rest_api_init', array( self::class, 'register_routes' ) );
+	}
 
-    /**
-     * Register execute REST route
-     */
-    public static function register_routes() {
-        register_rest_route('datamachine/v1', '/execute', [
-            'methods' => 'POST',
-            'callback' => [self::class, 'handle_execute'],
-            'permission_callback' => function() {
-                return current_user_can('manage_options');
-            },
-            'args' => [
-                'flow_id' => [
-                    'type' => 'integer',
-                    'required' => false,
-                    'description' => 'Database flow ID to execute'
-                ],
-                'workflow' => [
-                    'type' => 'object',
-                    'required' => false,
-                    'description' => 'Ephemeral workflow structure'
-                ],
-                'timestamp' => [
-                    'type' => 'integer',
-                    'required' => false,
-                    'description' => 'Unix timestamp for delayed execution'
-                ]
-            ]
-        ]);
-    }
+	/**
+	 * Register execute REST route
+	 */
+	public static function register_routes() {
+		register_rest_route(
+			'datamachine/v1',
+			'/execute',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( self::class, 'handle_execute' ),
+				'permission_callback' => function () {
+					return PermissionHelper::can( 'manage_flows' );
+				},
+				'args'                => array(
+					'flow_id'      => array(
+						'type'        => 'integer',
+						'required'    => false,
+						'description' => 'Database flow ID to execute',
+					),
+					'workflow'     => array(
+						'type'        => 'object',
+						'required'    => false,
+						'description' => 'Ephemeral workflow structure',
+					),
+					'count'        => array(
+						'type'        => 'integer',
+						'required'    => false,
+						'description' => 'Number of times to run (1-10, database flow only)',
+					),
+					'timestamp'    => array(
+						'type'        => 'integer',
+						'required'    => false,
+						'description' => 'Unix timestamp for delayed execution',
+					),
+					'initial_data' => array(
+						'type'        => 'object',
+						'required'    => false,
+						'description' => 'Initial engine data to merge before workflow execution',
+					),
+					'dry_run'      => array(
+						'type'        => 'boolean',
+						'required'    => false,
+						'default'     => false,
+						'description' => 'Preview execution without creating posts (ephemeral workflows only)',
+					),
+				),
+			)
+		);
+	}
 
-    /**
-     * Handle execute endpoint requests
-     *
-     * Pure execution endpoint - handles immediate and delayed execution only.
-     * For scheduling/recurring execution, use the /schedule endpoint.
-     */
-    public static function handle_execute($request) {
-        $flow_id = $request->get_param('flow_id');
-        $workflow = $request->get_param('workflow');
-        $timestamp = $request->get_param('timestamp');
+	/**
+	 * Handle execute endpoint requests.
+	 *
+	 * Routes to the appropriate ability:
+	 * - flow_id → datamachine/run-flow (immediate) or datamachine/schedule-flow (delayed)
+	 * - workflow → datamachine/execute-workflow (ephemeral)
+	 */
+	public static function handle_execute( $request ) {
+		$flow_id  = $request->get_param( 'flow_id' );
+		$workflow = $request->get_param( 'workflow' );
 
-        // Validate: must have flow_id OR workflow
-        if (!$flow_id && !$workflow) {
-            return new \WP_Error(
-                'missing_params',
-                'Must provide either flow_id or workflow',
-                ['status' => 400]
-            );
-        }
+		if ( ! $flow_id && ! $workflow ) {
+			return new \WP_Error( 'missing_input', 'Must provide either flow_id or workflow', array( 'status' => 400 ) );
+		}
 
-        if ($flow_id && $workflow) {
-            return new \WP_Error(
-                'conflicting_params',
-                'Cannot provide both flow_id and workflow',
-                ['status' => 400]
-            );
-        }
+		if ( $flow_id && $workflow ) {
+			return new \WP_Error( 'invalid_input', 'Cannot provide both flow_id and workflow', array( 'status' => 400 ) );
+		}
 
-        // Database flow execution
-        if ($flow_id) {
-            return self::execute_database_flow($flow_id, $timestamp);
-        }
+		if ( $flow_id ) {
+			return self::handle_flow_execution( $request );
+		}
 
-        // Ephemeral workflow execution
-        return self::execute_ephemeral_workflow($workflow, $timestamp);
-    }
+		return self::handle_ephemeral_execution( $request );
+	}
 
-    /**
-     * Execute database flow immediately or with delay
-     */
-    private static function execute_database_flow($flow_id, $timestamp) {
-        // Validate flow exists
-        $db_flows = new \DataMachine\Core\Database\Flows\Flows();
-        $flow = $db_flows->get_flow($flow_id);
-        if (!$flow) {
-            return new \WP_Error(
-                'flow_not_found',
-                "Flow {$flow_id} not found",
-                ['status' => 404]
-            );
-        }
+	/**
+	 * Handle database flow execution via datamachine/run-flow or schedule-flow.
+	 */
+	private static function handle_flow_execution( $request ) {
+		$flow_id      = (int) $request->get_param( 'flow_id' );
+		$timestamp    = $request->get_param( 'timestamp' );
+		$initial_data = $request->get_param( 'initial_data' );
+		$count        = max( 1, min( 10, (int) ( $request->get_param( 'count' ) ?? 1 ) ) );
 
-        // Create job upfront for immediate visibility
-        $job_manager = new \DataMachine\Services\JobManager();
-        $pipeline_id = (int) $flow['pipeline_id'];
-        $job_id = $job_manager->create($flow_id, $pipeline_id);
+		// Delayed execution → schedule-flow.
+		if ( ! empty( $timestamp ) && is_numeric( $timestamp ) && (int) $timestamp > time() ) {
+			if ( $count > 1 ) {
+				return new \WP_Error(
+					'invalid_input',
+					'Cannot schedule multiple runs with a timestamp.',
+					array( 'status' => 400 )
+				);
+			}
 
-        if (!$job_id) {
-            return new \WP_Error(
-                'job_creation_failed',
-                'Failed to create job record',
-                ['status' => 500]
-            );
-        }
+			$ability = wp_get_ability( 'datamachine/schedule-flow' );
+			if ( ! $ability ) {
+				return new \WP_Error( 'ability_not_found', 'Schedule flow ability not found', array( 'status' => 500 ) );
+			}
 
-        // Immediate execution via Action Scheduler
-        if (!$timestamp) {
-            $action_id = as_schedule_single_action(
-                time(),
-                'datamachine_run_flow_now',
-                [$flow_id, $job_id],
-                'data-machine'
-            );
+			$result = $ability->execute(
+				array(
+					'flow_id'               => $flow_id,
+					'interval_or_timestamp' => (int) $timestamp,
+				)
+			);
 
-            return rest_ensure_response([
-                'success' => true,
-                'data' => [
-                    'execution_type' => 'immediate',
-                    'flow_id' => $flow_id,
-                    'flow_name' => $flow['flow_name'] ?? "Flow {$flow_id}",
-                    'job_id' => $job_id,
-                    'action_id' => $action_id
-                ],
-                'message' => 'Flow queued for immediate background execution via Action Scheduler'
-            ]);
-        }
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
 
-        // Delayed execution (one-time)
-        if (!function_exists('as_schedule_single_action')) {
-            return new \WP_Error(
-                'scheduler_unavailable',
-                'Action Scheduler not available for delayed execution',
-                ['status' => 500]
-            );
-        }
+			if ( ! ( $result['success'] ?? false ) ) {
+				return new \WP_Error(
+					'schedule_failed',
+					$result['error'] ?? 'Failed to schedule flow',
+					array( 'status' => 400 )
+				);
+			}
 
-        $action_id = as_schedule_single_action(
-            $timestamp,
-            'datamachine_run_flow_now',
-            [$flow_id, $job_id],
-            'data-machine'
-        );
+			return rest_ensure_response(
+				array(
+					'success' => true,
+					'data'    => array(
+						'execution_type' => 'delayed',
+						'execution_mode' => 'database',
+						'flow_id'        => $flow_id,
+						'scheduled_time' => $result['scheduled_time'] ?? null,
+					),
+					'message' => 'Flow scheduled for delayed execution.',
+				)
+			);
+		}
 
-        return rest_ensure_response([
-            'success' => true,
-            'data' => [
-                'execution_type' => 'delayed',
-                'flow_id' => $flow_id,
-                'flow_name' => $flow['flow_name'] ?? "Flow {$flow_id}",
-                'job_id' => $job_id,
-                'timestamp' => $timestamp,
-                'scheduled_time' => wp_date('c', $timestamp)
-            ],
-            'message' => 'Flow scheduled for one-time execution at ' . wp_date('M j, Y g:i A', $timestamp)
-        ]);
-    }
+		// Immediate execution → run-flow (loop for count).
+		$ability = wp_get_ability( 'datamachine/run-flow' );
+		if ( ! $ability ) {
+			return new \WP_Error( 'ability_not_found', 'Run flow ability not found', array( 'status' => 500 ) );
+		}
 
-    /**
-     * Execute ephemeral workflow with optional delayed execution
-     */
-    private static function execute_ephemeral_workflow($workflow, $timestamp) {
+		$job_ids = array();
 
-        // Validate workflow structure
-        $validation = self::validate_workflow($workflow);
-        if (!$validation['valid']) {
-            return new \WP_Error(
-                'invalid_workflow',
-                $validation['error'],
-                ['status' => 400]
-            );
-        }
+		for ( $i = 0; $i < $count; $i++ ) {
+			$input = array( 'flow_id' => $flow_id );
 
-        // Build configs from workflow
-        $configs = self::build_configs_from_workflow($workflow);
+			if ( $initial_data && is_array( $initial_data ) ) {
+				$input['initial_data'] = $initial_data;
+			}
 
-        // Get database service
-        $db_jobs = new \DataMachine\Core\Database\Jobs\Jobs();
+			$result = $ability->execute( $input );
 
-        // Create job record for direct execution
-        $job_id = $db_jobs->create_job([
-            'pipeline_id' => 'direct',
-            'flow_id' => 'direct'
-        ]);
+			if ( is_wp_error( $result ) ) {
+				if ( empty( $job_ids ) ) {
+					return $result;
+				}
+				break;
+			}
 
-        if (!$job_id) {
-            return new \WP_Error(
-                'job_creation_failed',
-                'Failed to create job record',
-                ['status' => 500]
-            );
-        }
+			if ( ! ( $result['success'] ?? false ) ) {
+				if ( empty( $job_ids ) ) {
+					$status = 400;
+					$error  = $result['error'] ?? 'Execution failed';
+					if ( false !== strpos( $error, 'not found' ) ) {
+						$status = 404;
+					} elseif ( false !== strpos( $error, 'Failed to create' ) ) {
+						$status = 500;
+					}
+					return new \WP_Error( 'execute_failed', $error, array( 'status' => $status ) );
+				}
+				break;
+			}
 
-        // Store configs in engine_data
-        $db_jobs->store_engine_data($job_id, [
-            'flow_config' => $configs['flow_config'],
-            'pipeline_config' => $configs['pipeline_config']
-        ]);
+			$job_ids[] = $result['job_id'] ?? null;
+		}
 
-        // Find first step
-        $first_step_id = self::get_first_step_id($configs['flow_config']);
+		$response_data = array(
+			'execution_type' => 'immediate',
+			'execution_mode' => 'database',
+			'flow_id'        => $flow_id,
+		);
 
-        if (!$first_step_id) {
-            return new \WP_Error(
-                'workflow_error',
-                'Could not determine first step in workflow',
-                ['status' => 500]
-            );
-        }
+		if ( 1 === $count ) {
+			$response_data['job_id'] = $job_ids[0] ?? null;
+		} else {
+			$response_data['job_ids'] = $job_ids;
+			$response_data['count']   = count( $job_ids );
+		}
 
-        // Immediate execution
-        if (!$timestamp) {
-            do_action('datamachine_schedule_next_step', $job_id, $first_step_id, []);
+		return rest_ensure_response(
+			array(
+				'success' => true,
+				'data'    => $response_data,
+				'message' => 'Execution started',
+			)
+		);
+	}
 
-            return rest_ensure_response([
-                'success' => true,
-                'data' => [
-                    'execution_type' => 'immediate',
-                    'job_id' => $job_id,
-                    'step_count' => count($workflow['steps'] ?? [])
-                ],
-                'message' => 'Ephemeral workflow execution started'
-            ]);
-        }
+	/**
+	 * Handle ephemeral workflow execution via datamachine/execute-workflow.
+	 */
+	private static function handle_ephemeral_execution( $request ) {
+		$workflow     = $request->get_param( 'workflow' );
+		$timestamp    = $request->get_param( 'timestamp' );
+		$initial_data = $request->get_param( 'initial_data' );
+		$dry_run      = $request->get_param( 'dry_run' );
 
-        // Delayed execution
-        if (function_exists('as_schedule_single_action')) {
-            $action_id = as_schedule_single_action(
-                $timestamp,
-                'datamachine_schedule_next_step',
-                [$job_id, $first_step_id, []],
-                'data-machine'
-            );
+		$ability = wp_get_ability( 'datamachine/execute-workflow' );
+		if ( ! $ability ) {
+			return new \WP_Error( 'ability_not_found', 'Execute workflow ability not found', array( 'status' => 500 ) );
+		}
 
-            if ($action_id === false) {
-                return new \WP_Error(
-                    'scheduling_failed',
-                    'Failed to schedule workflow execution',
-                    ['status' => 500]
-                );
-            }
+		$input = array( 'workflow' => $workflow );
 
-            return rest_ensure_response([
-                'success' => true,
-                'data' => [
-                    'execution_type' => 'delayed',
-                    'job_id' => $job_id,
-                    'step_count' => count($workflow['steps'] ?? []),
-                    'timestamp' => $timestamp,
-                    'scheduled_time' => wp_date('c', $timestamp)
-                ],
-                'message' => 'Ephemeral workflow scheduled for one-time execution at ' . wp_date('M j, Y g:i A', $timestamp)
-            ]);
-        }
+		if ( $timestamp && is_numeric( $timestamp ) && (int) $timestamp > time() ) {
+			$input['timestamp'] = (int) $timestamp;
+		}
 
-        return new \WP_Error(
-            'scheduler_unavailable',
-            'Action Scheduler not available for delayed execution',
-            ['status' => 500]
-        );
-    }
+		if ( $initial_data && is_array( $initial_data ) ) {
+			$input['initial_data'] = $initial_data;
+		}
 
-    /**
-     * Validate workflow structure
-     */
-    private static function validate_workflow($workflow) {
-        if (!isset($workflow['steps']) || !is_array($workflow['steps'])) {
-            return ['valid' => false, 'error' => 'Workflow must contain steps array'];
-        }
+		if ( $dry_run ) {
+			$input['dry_run'] = true;
+		}
 
-        if (empty($workflow['steps'])) {
-            return ['valid' => false, 'error' => 'Workflow must have at least one step'];
-        }
+		$result = $ability->execute( $input );
 
-        $step_type_service = new StepTypeService();
-        $valid_types = array_keys($step_type_service->getAll());
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
 
-        foreach ($workflow['steps'] as $index => $step) {
-            if (!isset($step['type'])) {
-                return ['valid' => false, 'error' => "Step {$index} missing type"];
-            }
+		if ( ! ( $result['success'] ?? false ) ) {
+			$status = 400;
+			$error  = $result['error'] ?? __( 'Execution failed', 'data-machine' );
 
-            if (!in_array($step['type'], $valid_types, true)) {
-                return ['valid' => false, 'error' => "Step {$index} has invalid type: {$step['type']}. Valid types: " . implode(', ', $valid_types)];
-            }
+			if ( false !== strpos( $error, 'not found' ) ) {
+				$status = 404;
+			} elseif ( false !== strpos( $error, 'Failed to create' ) || false !== strpos( $error, 'not available' ) ) {
+				$status = 500;
+			}
 
-            if ($step['type'] !== 'ai' && !isset($step['handler_slug'])) {
-                return ['valid' => false, 'error' => "Step {$index} missing handler_slug (required for non-AI steps)"];
-            }
-        }
+			return new \WP_Error( 'execute_failed', $error, array( 'status' => $status ) );
+		}
 
-        return ['valid' => true];
-    }
+		$response_data = array(
+			'execution_type' => $result['execution_type'] ?? 'immediate',
+			'execution_mode' => $result['execution_mode'] ?? 'direct',
+		);
 
-    /**
-     * Build flow_config and pipeline_config from workflow structure
-     */
-    private static function build_configs_from_workflow($workflow) {
-        $flow_config = [];
-        $pipeline_config = [];
+		if ( isset( $result['job_id'] ) ) {
+			$response_data['job_id'] = $result['job_id'];
+		}
 
-        foreach ($workflow['steps'] as $index => $step) {
-            $step_id = "ephemeral_step_{$index}";
-            $pipeline_step_id = "ephemeral_pipeline_{$index}";
+		if ( isset( $result['step_count'] ) ) {
+			$response_data['step_count'] = $result['step_count'];
+		}
 
-            // Flow config (instance-specific)
-            $flow_config[$step_id] = [
-                'flow_step_id' => $step_id,
-                'pipeline_step_id' => $pipeline_step_id,
-                'step_type' => $step['type'],
-                'execution_order' => $index,
-                'handler_slug' => $step['handler_slug'] ?? '',
-                'handler_config' => $step['handler_config'] ?? [],
-                'user_message' => $step['user_message'] ?? '',
-                'enabled_tools' => $step['enabled_tools'] ?? [],
-                'pipeline_id' => 'direct',
-                'flow_id' => 'direct'
-            ];
+		if ( isset( $result['dry_run'] ) && $result['dry_run'] ) {
+			$response_data['dry_run'] = true;
+		}
 
-            // Pipeline config (AI settings only)
-            if ($step['type'] === 'ai') {
-                $pipeline_config[$pipeline_step_id] = [
-                    'provider' => $step['provider'] ?? '',
-                    'model' => $step['model'] ?? '',
-                    'system_prompt' => $step['system_prompt'] ?? '',
-                    'enabled_tools' => $step['enabled_tools'] ?? []
-                ];
-            }
-        }
+		if ( isset( $result['timestamp'] ) ) {
+			$response_data['timestamp']      = $result['timestamp'];
+			$response_data['scheduled_time'] = $result['scheduled_time'] ?? wp_date( 'c', $result['timestamp'] );
+		}
 
-        return [
-            'flow_config' => $flow_config,
-            'pipeline_config' => $pipeline_config
-        ];
-    }
-
-    /**
-     * Get first step ID from flow_config
-     */
-    private static function get_first_step_id($flow_config) {
-        foreach ($flow_config as $step_id => $config) {
-            if (($config['execution_order'] ?? -1) === 0) {
-                return $step_id;
-            }
-        }
-        return null;
-    }
+		return rest_ensure_response(
+			array(
+				'success' => true,
+				'data'    => $response_data,
+				'message' => $result['message'] ?? __( 'Execution started', 'data-machine' ),
+			)
+		);
+	}
 }

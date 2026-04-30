@@ -4,6 +4,9 @@
  * Reusable drag-drop zone for file uploads with configurable file types and size limits.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { useState, useRef } from '@wordpress/element';
 import { Button } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
@@ -11,13 +14,13 @@ import { __ } from '@wordpress/i18n';
 /**
  * File Upload Dropzone Component
  *
- * @param {Object} props - Component props
- * @param {Function} props.onFileSelected - File selection callback (file)
- * @param {Array<string>} props.allowedTypes - Allowed file extensions (e.g., ['pdf', 'csv', 'txt', 'json'])
- * @param {number} props.maxSizeMB - Maximum file size in MB (default: 10)
- * @param {boolean} props.disabled - Disabled state
- * @param {string} props.uploadText - Custom upload text
- * @returns {React.ReactElement} File upload dropzone
+ * @param {Object}        props                - Component props
+ * @param {Function}      props.onFileSelected - File selection callback (file)
+ * @param {Array<string>} props.allowedTypes   - Allowed file extensions (e.g., ['pdf', 'csv', 'txt', 'json'])
+ * @param {number}        props.maxSizeMB      - Maximum file size in MB (default: 10)
+ * @param {boolean}       props.disabled       - Disabled state
+ * @param {string}        props.uploadText     - Custom upload text
+ * @return {React.ReactElement} File upload dropzone
  */
 export default function FileUploadDropzone( {
 	onFileSelected,
@@ -46,6 +49,7 @@ export default function FileUploadDropzone( {
 
 	/**
 	 * Validate and process file
+	 * @param file
 	 */
 	const processFile = ( file ) => {
 		// Get file extension
@@ -56,7 +60,7 @@ export default function FileUploadDropzone( {
 			setError(
 				__(
 					`Please select a valid file. Allowed types: ${ formatAllowedTypes() }`,
-					'datamachine'
+					'data-machine'
 				)
 			);
 			return;
@@ -66,7 +70,10 @@ export default function FileUploadDropzone( {
 		const maxSizeBytes = maxSizeMB * 1024 * 1024;
 		if ( file.size > maxSizeBytes ) {
 			setError(
-				__( `File size exceeds ${ maxSizeMB }MB limit.`, 'datamachine' )
+				__(
+					`File size exceeds ${ maxSizeMB }MB limit.`,
+					'data-machine'
+				)
 			);
 			return;
 		}
@@ -80,6 +87,7 @@ export default function FileUploadDropzone( {
 
 	/**
 	 * Handle drag events
+	 * @param e
 	 */
 	const handleDragEnter = ( e ) => {
 		e.preventDefault();
@@ -105,7 +113,9 @@ export default function FileUploadDropzone( {
 		e.stopPropagation();
 		setIsDragging( false );
 
-		if ( disabled ) return;
+		if ( disabled ) {
+			return;
+		}
 
 		const files = e.dataTransfer.files;
 		if ( files.length > 0 ) {
@@ -115,6 +125,7 @@ export default function FileUploadDropzone( {
 
 	/**
 	 * Handle file input change
+	 * @param e
 	 */
 	const handleFileInputChange = ( e ) => {
 		const files = e.target.files;
@@ -132,7 +143,7 @@ export default function FileUploadDropzone( {
 		}
 	};
 
-	const defaultUploadText = __( 'Drag and drop file here', 'datamachine' );
+	const defaultUploadText = __( 'Drag and drop file here', 'data-machine' );
 
 	return (
 		<div>
@@ -141,12 +152,12 @@ export default function FileUploadDropzone( {
 				onDragLeave={ handleDragLeave }
 				onDragOver={ handleDragOver }
 				onDrop={ handleDrop }
-				className={`datamachine-dropzone ${isDragging ? 'datamachine-dropzone--dragging' : ''}`}
+				className={ `datamachine-dropzone ${
+					isDragging ? 'datamachine-dropzone--dragging' : ''
+				}` }
 				onClick={ ! disabled ? handleBrowseClick : undefined }
 			>
-				<div className="datamachine-dropzone-icon">
-					📁
-				</div>
+				<div className="datamachine-dropzone-icon"></div>
 
 				<p className="datamachine-dropzone-title">
 					{ uploadText || defaultUploadText }
@@ -155,12 +166,12 @@ export default function FileUploadDropzone( {
 				<p className="datamachine-dropzone-helper">
 					{ __(
 						`Allowed: ${ formatAllowedTypes() } (max ${ maxSizeMB }MB)`,
-						'datamachine'
+						'data-machine'
 					) }
 				</p>
 
 				<p className="datamachine-dropzone-or">
-					{ __( 'or', 'datamachine' ) }
+					{ __( 'or', 'data-machine' ) }
 				</p>
 
 				<Button
@@ -168,7 +179,7 @@ export default function FileUploadDropzone( {
 					onClick={ handleBrowseClick }
 					disabled={ disabled }
 				>
-					{ __( 'Browse Files', 'datamachine' ) }
+					{ __( 'Browse Files', 'data-machine' ) }
 				</Button>
 
 				<input
@@ -182,9 +193,7 @@ export default function FileUploadDropzone( {
 			</div>
 
 			{ error && (
-				<div className="datamachine-dropzone-error">
-					{ error }
-				</div>
+				<div className="datamachine-dropzone-error">{ error }</div>
 			) }
 		</div>
 	);

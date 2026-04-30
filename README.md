@@ -1,66 +1,294 @@
-=== Data Machine ===
+# Data Machine
 
-Contributors: extrachill
-Tags: ai, automation, content, workflow, pipeline, chat
-Requires at least: 6.2
-Tested up to: 6.8
-Requires PHP: 8.2
-Stable tag: 0.10.2
-License: GPLv2 or later
-License URI: https://www.gnu.org/licenses/gpl-2.0.html
+Agentic infrastructure for WordPress.
 
-AI-first WordPress plugin for content processing workflows with a visual pipeline builder, conversational chat agent, REST API, and handler/tool extensibility.
+## What It Does
 
-## Overview
+Data Machine turns a WordPress site into an agent runtime — persistent identity, memory, pipelines, abilities, and tools that AI agents use to operate autonomously.
 
-- **Pipeline + Flow architecture** that separates reusable pipeline templates from scheduled flow instances and job executions.
-- **Modern React admin** that relies exclusively on the REST API, TanStack Query, and Zustand for caching, optimistic updates, and client state isolation. Page visibility is controlled through the "Admin Pages" settings or the `datamachine_admin_pages` filter. Features a collapsible **Integrated Chat Sidebar** for context-aware pipeline automation, a centralized **Logs interface**, and a **React-based Jobs dashboard** for real-time monitoring.
-- **Tool-first AI agents** that discover enabling providers, call contextual tools, and persist conversations via a universal engine shared by chat and pipelines.
-- **Services layer** (FlowManager, PipelineManager, JobManager, LogsManager, ProcessedItemsManager, FlowStepManager, PipelineStepManager, CacheManager) that replaces filter indirection with direct method calls for predictable behavior and easier testing.
-- **Global handler tooling** with modular fetch, publish, and update adapters backed by centralized registration traits and field schemas.
-- **Centralized Cache Invalidation** via CacheManager to ensure dynamic handler and step type registrations are immediately reflected across the system. Site context metadata is also cached and automatically invalidated on content changes.
+- **Pipelines** — Multi-step workflows: fetch content, process with AI, publish anywhere
+- **Abilities API** — Typed, permissioned functions that agents and extensions call (`datamachine/upload-media`, `datamachine/validate-media`, etc.)
+- **Agent memory** — Layered markdown files (SOUL.md + MEMORY.md in agent layer, USER.md in user layer) injected into every AI context
+- **Multi-agent** — Multiple agents with scoped pipelines, flows, jobs, and filesystem directories
+- **Self-scheduling** — Agents schedule their own recurring tasks using flows, prompt queues, and Agent Pings
 
-## Key Features
+## Architecture
 
-- **Clean execution pipeline**: Reliability-first **Single Item Execution Model** where Fetch → AI → Publish/Update handlers process exactly one normalized data packet per job execution cycle. Engine parameters remain accessible through centralized filters (`datamachine_engine_data`).
-- **Deduplication tracking** via processed items and job-scoped per-agent logging.
-- **Multi-provider AI** support (OpenAI, Anthropic, Google, Grok, OpenRouter) with tool orchestration and directive management through PromptBuilder and RequestBuilder.
-- **Unified tool architecture** covering global search/fetch tools and chat-specific workflow tools. Focused Tools (CreatePipeline, RunFlow, etc.) handle mutation while ApiQuery provides read-only discovery.
-- **Granular Job Monitoring**: Real-time status tracking including `completed_no_items` to differentiate between empty fetches and failures. Automated "Problem Flow" flagging based on consecutive failures or empty results.
-- **HTTP client standardization** with HttpClient for consistent headers, browser simulation, timeout handling, and logging integrations.
-- **Extension-ready systems** using WordPress filters for handlers, tools, authentication providers, and step types.
+### Pipelines
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│    FETCH    │ ──▶ │     AI      │ ──▶ │   PUBLISH   │
+│  RSS, API,  │     │  Enhance,   │     │  WordPress, │
+│  WordPress  │     │  Transform  │     │   Social,   │
+└─────────────┘     └─────────────┘     └─────────────┘
+```
+
+**Pipelines** define the workflow template. **Flows** schedule when they run. **Jobs** track each execution with full undo support.
+
+### Agent Contexts
+
+One agent, three operational modes — same identity and memory, different tools:
+
+| Context | Purpose | Tools |
+|---------|---------|-------|
+| **Pipeline** | Automated workflow execution | Handler-specific tools scoped to the current step |
+| **Chat** | Conversational interface in wp-admin | 30+ management tools (flows, pipelines, jobs, logs, memory, content) |
+| **System** | Background infrastructure tasks | Alt text, daily memory, image generation, internal linking, meta descriptions (GitHub issues in data-machine-code extension) |
+
+Configure AI provider and model per context in Settings. Each context falls back to the global default if no override is set.
+
+### Agent Memory
+
+Persistent markdown files injected into every AI context:
+
+```
+shared/
+  SITE.md                  — Site-wide context
+agents/{slug}/
+  SOUL.md                  — Identity, voice, rules
+  MEMORY.md                — Accumulated knowledge
+  daily/YYYY/MM/DD.md      — Automatic daily journals
+users/{id}/
+  USER.md                  — Information about the human
+```
+
+Discovery: `wp datamachine memory paths --allow-root`
+
+### Abilities API
+
+Typed, permissioned functions registered via WordPress's Abilities API. Extensions and agents consume them instead of reaching into internals:
+
+| Ability | Description |
+|---------|-------------|
+| `datamachine/upload-media` | Upload/fetch image or video, store in repository or Media Library |
+| `datamachine/validate-media` | Validate against platform constraints (duration, size, codec, aspect ratio) |
+| `datamachine/video-metadata` | Extract duration, resolution, codec via ffprobe |
+| `datamachine/instagram-publish` | Publish to Instagram (image, carousel, Reel, Story) |
+| `datamachine/twitter-publish` | Publish to Twitter with media support |
+| `datamachine/flow-execute` | Execute a flow programmatically |
+| ... | 40+ abilities across media, publishing, content, SEO, and infrastructure |
+
+### Content Formats
+
+Content and publish abilities accept `content_format` (`markdown`, `html`, or `blocks`) as the caller's source format. Data Machine stores content in the post type's canonical format from `datamachine_post_content_format`, converting through its bundled Block Format Bridge substrate.
+
+### Multi-Agent
+
+Agents are scoped by user. Each agent gets its own:
+
+- Filesystem directory (`agents/{slug}/`)
+- Memory files (SOUL.md, MEMORY.md)
+- Pipelines, flows, and jobs (scoped by `user_id`)
+
+Single-agent mode (`user_id=0`) works out of the box. Multi-agent adds scoping without breaking existing setups.
+
+## Step Types & Handlers
+
+Pipelines are built from **step types**. Some use pluggable **handlers** — interchangeable implementations that define *how* the step operates.
+
+### Steps with handlers
+
+| Step Type | Core Handlers | Extension Handlers |
+|-----------|---------------|-------------------|
+| **Fetch** | RSS, WordPress (local posts), WordPress API (remote), WordPress Media, Files | GitHub, Google Sheets, Reddit, social platforms (in extensions) |
+| **Publish** | WordPress | Workspace (data-machine-code), Twitter, Instagram, Facebook, Threads, Bluesky, Pinterest, Google Sheets, Slack, Discord (in extensions) |
+| **Update** | WordPress posts with AI enhancement | — |
+
+### Self-contained steps
+
+| Step Type | Description |
+|-----------|-------------|
+| **AI** | Process content with the configured AI provider |
+| **Agent Ping** | Outbound webhook to trigger external agents |
+| **Webhook Gate** | Pause pipeline until an external webhook callback fires |
+| **System Task** | Background tasks (alt text, image generation, daily memory, etc.) |
+
+## Media Primitives
+
+Core provides platform-agnostic media handling that extensions consume:
+
+```
+Pipeline flow:
+
+  Fetch step → video_file_path / image_file_path in engine data
+    → PublishHandler.resolveMediaUrls(engine)
+      → MediaValidator (ImageValidator or VideoValidator)
+      → FileStorage.get_public_url()
+    → Platform API (Instagram, Twitter, etc.)
+```
+
+- **MediaValidator** — Abstract base with ImageValidator and VideoValidator subclasses
+- **VideoMetadata** — ffprobe extraction with graceful degradation
+- **EngineData** — `getImagePath()` and `getVideoPath()` for pipeline media flow
+- **PublishHandler** — `resolveMediaUrls()`, `validateImage()`, `validateVideo()` on the base class
+
+## Theming
+
+Data Machine exposes two aligned theming surfaces: CSS custom properties for browser-rendered UI and `BrandTokens` for PHP/GD-rendered image templates. See [`docs/theming.md`](docs/theming.md) for the decision matrix and token catalogs.
+
+## System Tasks
+
+Background AI tasks that run on hooks or schedules:
+
+| Task | Description |
+|------|-------------|
+| **Alt Text** | Generate alt text for images missing it |
+| **Image Generation** | AI image creation with content-gap placement |
+| **Daily Memory** | Consolidate MEMORY.md, archive to daily files |
+| **Internal Linking** | AI-powered internal link suggestions |
+| **Meta Descriptions** | Generate SEO meta descriptions |
+| **GitHub Issues** | Create issues from pipeline findings (in data-machine-code extension) |
+
+Tasks support undo via the Job Undo system (revision-based rollback for post content, meta, attachments, featured images).
+
+## Self-Scheduling
+
+```
+Agent queues task → Flow runs → Agent Ping fires →
+Agent executes → Agent queues next task → Loop continues
+```
+
+- **Flows** run on schedules — daily, hourly, or cron expressions
+- **Prompt queues** — AI and Agent Ping steps pop tasks from persistent queues
+- **Webhook triggers** — `POST /datamachine/v1/trigger/{flow_id}` with Bearer token auth
+- **Agent Ping** — Outbound webhook with context for receiving agents
+
+## WP-CLI
+
+```bash
+wp datamachine agents           # Agent management and path discovery
+wp datamachine pipelines        # Pipeline CRUD
+wp datamachine flows            # Flow CRUD and queue management
+wp datamachine jobs             # Job management, monitoring, undo
+wp datamachine settings         # Plugin settings
+wp datamachine posts            # Query Data Machine-created posts
+wp datamachine logs             # Log operations
+wp datamachine memory           # Agent memory read/write
+wp datamachine handlers         # List registered handlers
+wp datamachine step-types       # List registered step types
+wp datamachine chat             # Chat agent interface
+wp datamachine alt-text         # AI alt text generation
+wp datamachine links            # Internal linking
+wp datamachine blocks           # Gutenberg block operations
+wp datamachine image            # Image generation
+wp datamachine meta-description # SEO meta descriptions
+wp datamachine auth             # OAuth provider management
+wp datamachine taxonomy         # Taxonomy operations
+wp datamachine batch            # Batch operations
+wp datamachine system           # System task management
+wp datamachine analytics        # Analytics and tracking
+```
+
+## REST API
+
+Full REST API under `datamachine/v1`:
+
+- `POST /execute` — Execute a flow
+- `POST /trigger/{flow_id}` — Webhook trigger with Bearer token auth
+- `POST /chat` — Chat agent interface
+- `GET|POST /pipelines` — Pipeline CRUD
+- `GET|POST /flows` — Flow CRUD with queue management
+- `GET|POST /jobs` — Job management
+- `POST /jobs/{id}/undo` — Job undo
+- `GET /agent/paths` — Agent file path discovery
+
+## Extensions
+
+| Plugin | Description |
+|--------|-------------|
+| [data-machine-code](https://github.com/Extra-Chill/data-machine-code) | Workspace management, GitHub integration, git operations |
+| [data-machine-socials](https://github.com/Extra-Chill/data-machine-socials) | Publish to Instagram (images, carousels, Reels, Stories), Twitter (text + media + video), Facebook, Threads, Bluesky, Pinterest (image + video pins). Reddit fetch. |
+| [data-machine-business](https://github.com/Extra-Chill/data-machine-business) | Google Sheets (fetch + publish), Slack, Discord integrations |
+| [data-machine-editor](https://github.com/Extra-Chill/data-machine-editor) | Gutenberg inline diff visualization, accept/reject review, editor sidebar |
+| [data-machine-frontend-chat](https://github.com/Extra-Chill/data-machine-frontend-chat) | Floating agent chat widget for any WordPress site |
+| [data-machine-chat-bridge](https://github.com/Extra-Chill/data-machine-chat-bridge) | Message queue, webhook delivery, and REST API for external chat clients |
+| [data-machine-events](https://github.com/Extra-Chill/data-machine-events) | Event calendar automation with AI + Gutenberg blocks |
+| [datamachine-recipes](https://github.com/Sarai-Chinwag/datamachine-recipes) | Recipe content extraction and schema processing |
+| [data-machine-quiz](https://github.com/Sarai-Chinwag/data-machine-quiz) | Quiz creation and management tools |
+
+### Skills
+
+| Package | Description |
+|---------|-------------|
+| [data-machine-skills](https://github.com/Extra-Chill/data-machine-skills) | Agent skills — discoverable instruction sets that coding agents load on demand |
+
+### Integrations
+
+| Project | Description |
+|---------|-------------|
+| [mautrix-data-machine](https://github.com/Extra-Chill/mautrix-data-machine) | Matrix/Beeper bridge — chat with your WordPress AI agent via any Matrix client |
+
+## AI Providers
+
+OpenAI, Anthropic, Google, Grok, OpenRouter — configure a global default per-site, with per-context overrides for pipeline, chat, and system.
+
+## Runtime Adapters
+
+Data Machine ships its own multi-turn conversation loop and uses it by default. The loop is also swappable: a single Agents API-shaped filter (`agents_api_conversation_runner`) lets an external runtime take over while Data Machine still provides pipelines, flows, tool resolution, abilities, and memory.
+
+```php
+add_filter(
+    'agents_api_conversation_runner',
+    function ( $result, $messages, $tools, $provider, $model, $context, $payload, $max_turns, $single_turn ) {
+        // Return an array matching AIConversationLoop::execute()'s shape to
+        // replace the built-in loop, or null to let Data Machine run it.
+        return my_runtime_run( ... );
+    },
+    10,
+    9
+);
+```
+
+This mirrors the provider pattern used by the bundled AI HTTP Client: providers swap how the LLM is called; runtime adapters swap how the conversation is run. Data Machine makes no assumptions about the host runtime — the filter is the entire contract.
+
+See [`docs/core-system/ai-conversation-loop.md`](docs/core-system/ai-conversation-loop.md#runtime-adapters) for the full adapter contract and return-shape reference.
+
+## Memory Storage Adapters
+
+Agent memory files (MEMORY.md, SOUL.md, USER.md, NETWORK.md, AGENTS.md, plus any custom files registered through `MemoryFileRegistry`) persist on the local filesystem by default. The persistence layer is swappable through a single Agents API-shaped filter (`agents_api_memory_store`), enabling DB-backed implementations on managed hosts that don't expose a writable filesystem.
+
+```php
+add_filter(
+    'agents_api_memory_store',
+    function ( $store, $scope ) {
+        // Return an AgentMemoryStoreInterface to replace the disk default
+        // for this scope, or null to let Data Machine read/write through
+        // the filesystem.
+        return new My_DB_Agent_Memory_Store();
+    },
+    10,
+    2
+);
+```
+
+Section parsing, scaffolding, and editability gating stay in Data Machine; the store is just the bytes layer underneath. All consumer paths — section reads/writes (`AgentMemory`), the React Agent UI (`AgentFileAbilities`), and AI context injection (`CoreMemoryFilesDirective`) — flow through the same store, so a single swap makes the entire memory surface backend-agnostic.
+
+See [`docs/development/hooks/core-filters.md`](docs/development/hooks/core-filters.md#agentmemorystoreinterface-inccorefilesrepositoryagentmemorystoreinterfacephp) for the full interface contract.
 
 ## Requirements
 
-- WordPress 6.2 or higher and PHP 8.2 or higher.
-- Composer for dependency management and vendor autoloading.
-- Action Scheduler for scheduled flow execution when jobs rely on cron.
+- WordPress 6.9+ (Abilities API)
+- PHP 8.2+
+- Action Scheduler (bundled)
 
-## Architecture highlights
+## Development
 
-- **EngineData** serves as the platform-agnostic data source, streaming normalized packets and metadata to handlers and tools while shared helpers (WordPressPublishHelper, TaxonomyHandler, WordPressSettingsResolver) address WordPress-specific needs.
-- **FilesRepository** modules (DirectoryManager, FileStorage, FileCleanup, ImageValidator, RemoteFileDownloader, FileRetrieval) ensure flow-scoped file handling, validation, and cleanup.
-- **Step Navigator** and **Tool Result Finder** keep executions ordered and AI interactions traceable.
-- **Prompt/Directive system** centralizes system prompts and directives via `datamachine_directives`, with priorities that layer workflow context, tool definitions, and site information to every request.
+```bash
+homeboy test data-machine    # PHPUnit tests
+homeboy audit data-machine   # Architecture and convention audits
+homeboy build data-machine   # Test, lint, build, package
+homeboy lint data-machine    # PHPCS with WordPress standards
+```
 
-## REST API surface
+## Documentation
 
-All data flows through `/wp-json/datamachine/v1/`, exposing endpoints for auth, execute, files, flows, pipelines, jobs, logs, processed items, handlers, providers, settings, step types, tools, and other infrastructure needs. Service managers handle validation, sanitation, and error handling before responses reach the REST layer.
+- [docs/](docs/) — User documentation
+- [docs/architecture/pipeline-execution-axes.md](docs/architecture/pipeline-execution-axes.md) — Four orthogonal axes of work expansion in a pipeline
+- [skills/data-machine/SKILL.md](skills/data-machine/SKILL.md) — Agent integration patterns
+- [AGENTS.md](AGENTS.md) — Technical reference for contributors
+- [docs/CHANGELOG.md](docs/CHANGELOG.md) — Version history
 
-## Handler & tool coverage
+## Star History
 
-- **Fetch handlers**: Files, RSS, Reddit, Google Sheets, WordPress Local, WordPress Media, WordPress API.
-- **Publish handlers**: Twitter, Threads, Bluesky, Facebook, WordPress Publish, Google Sheets Output.
-- **Update handlers**: WordPress Update with engine parameter support for existing posts.
-- **Global AI tools**: Google Search, Local Search, Web Fetch, WordPress Post Reader.
-- **Chat/workflow tools**: ExecuteWorkflow, AddPipelineStep, ApiQuery, ConfigureFlowSteps, ConfigurePipelineStep, CreateFlow, CreatePipeline, RunFlow, UpdateFlow.
-
-## Development notes
-
-- Composer scripts define PHPUnit suites (`test`, `test:unit`, `test:integration`, `test:coverage`, `test:verbose`).
-- `build.sh` bundles production artifacts into a distributable ZIP with production dependencies.
-
-## Additional resources
-
-- [AGENTS.md](AGENTS.md) provides a concise reference for contributors.
-- `/docs/` houses user-facing documentation covering architecture, handlers, AI tools, admin interface guidance, and API references.
+[![Star History Chart](https://api.star-history.com/svg?repos=Extra-Chill/data-machine&type=date&legend=top-left)](https://www.star-history.com/#Extra-Chill/data-machine&type=date&legend=top-left)

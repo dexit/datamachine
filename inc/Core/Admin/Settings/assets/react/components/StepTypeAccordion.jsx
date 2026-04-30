@@ -4,7 +4,13 @@
  * Collapsible section for a step type containing its handlers.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { useState } from '@wordpress/element';
+/**
+ * Internal dependencies
+ */
 import HandlerDefaultsForm from './HandlerDefaultsForm';
 
 const StepTypeAccordion = ( {
@@ -24,14 +30,18 @@ const StepTypeAccordion = ( {
 	};
 
 	const handleHandlerClick = ( handlerSlug ) => {
-		setExpandedHandler( expandedHandler === handlerSlug ? null : handlerSlug );
+		setExpandedHandler(
+			expandedHandler === handlerSlug ? null : handlerSlug
+		);
 	};
 
 	return (
 		<div className="datamachine-step-type-accordion">
 			<button
 				type="button"
-				className={ `datamachine-step-type-header ${ isExpanded ? 'is-expanded' : '' }` }
+				className={ `datamachine-step-type-header ${
+					isExpanded ? 'is-expanded' : ''
+				}` }
 				onClick={ toggleExpanded }
 				aria-expanded={ isExpanded }
 			>
@@ -58,37 +68,56 @@ const StepTypeAccordion = ( {
 						</p>
 					) : (
 						<div className="datamachine-handlers-list">
-							{ Object.entries( handlers || {} ).map( ( [ handlerSlug, handlerData ] ) => (
-								<div key={ handlerSlug } className="datamachine-handler-item">
-									<button
-										type="button"
-										className={ `datamachine-handler-header ${
-											expandedHandler === handlerSlug ? 'is-expanded' : ''
-										}` }
-										onClick={ () => handleHandlerClick( handlerSlug ) }
-										aria-expanded={ expandedHandler === handlerSlug }
+							{ Object.entries( handlers || {} ).map(
+								( [ handlerSlug, handlerData ] ) => (
+									<div
+										key={ handlerSlug }
+										className="datamachine-handler-item"
 									>
-										<span className="datamachine-handler-arrow">
-											{ expandedHandler === handlerSlug ? '▼' : '▶' }
-										</span>
-										<span className="datamachine-handler-slug">
-											{ handlerSlug }
-										</span>
-										<span className="datamachine-handler-label">
-											{ handlerData.label }
-										</span>
-									</button>
+										<button
+											type="button"
+											className={ `datamachine-handler-header ${
+												expandedHandler === handlerSlug
+													? 'is-expanded'
+													: ''
+											}` }
+											onClick={ () =>
+												handleHandlerClick(
+													handlerSlug
+												)
+											}
+											aria-expanded={
+												expandedHandler === handlerSlug
+											}
+										>
+											<span className="datamachine-handler-arrow">
+												{ expandedHandler ===
+												handlerSlug
+													? '▼'
+													: '▶' }
+											</span>
+											<span className="datamachine-handler-slug">
+												{ handlerSlug }
+											</span>
+											<span className="datamachine-handler-label">
+												{ handlerData.label }
+											</span>
+										</button>
 
-									{ expandedHandler === handlerSlug && (
-										<HandlerDefaultsForm
-											handlerSlug={ handlerSlug }
-											handlerData={ handlerData }
-											onSave={ onSave }
-											isSaving={ savingHandler === handlerSlug }
-										/>
-									) }
-								</div>
-							) ) }
+										{ expandedHandler === handlerSlug && (
+											<HandlerDefaultsForm
+												handlerSlug={ handlerSlug }
+												handlerData={ handlerData }
+												onSave={ onSave }
+												isSaving={
+													savingHandler ===
+													handlerSlug
+												}
+											/>
+										) }
+									</div>
+								)
+							) }
 						</div>
 					) }
 				</div>

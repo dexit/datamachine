@@ -4,9 +4,11 @@
  *
  * Provides REST API access to job execution history.
  * Requires WordPress manage_options capability for all operations.
+ * Delegates to concrete Job abilities for core logic.
  *
  * Endpoints:
  * - GET /datamachine/v1/jobs - Retrieve jobs list with pagination and filtering
+ * - GET /datamachine/v1/jobs/{id} - Get specific job details
  * - DELETE /datamachine/v1/jobs - Clear jobs (all or failed)
  *
  * @package DataMachine\Api
@@ -14,9 +16,11 @@
 
 namespace DataMachine\Api;
 
-use DataMachine\Core\Admin\DateFormatter;
+use DataMachine\Abilities\PermissionHelper;
+use DataMachine\Abilities\Job\DeleteJobsAbility;
+use DataMachine\Abilities\Job\GetJobsAbility;
 
-if (!defined('WPINC')) {
+if ( ! defined( 'WPINC' ) ) {
 	die;
 }
 
@@ -26,7 +30,7 @@ class Jobs {
 	 * Register REST API routes
 	 */
 	public static function register() {
-		add_action('rest_api_init', [self::class, 'register_routes']);
+		add_action( 'rest_api_init', array( self::class, 'register_routes' ) );
 	}
 
 	/**
@@ -35,102 +39,132 @@ class Jobs {
 	public static function register_routes() {
 
 		// GET /datamachine/v1/jobs - Retrieve jobs
-		register_rest_route('datamachine/v1', '/jobs', [
-			'methods' => 'GET',
-			'callback' => [self::class, 'handle_get_jobs'],
-			'permission_callback' => [self::class, 'check_permission'],
-			'args' => [
-				'orderby' => [
-					'required' => false,
-					'type' => 'string',
-					'default' => 'job_id',
-					'description' => __('Order jobs by field', 'data-machine')
-				],
-				'order' => [
-					'required' => false,
-					'type' => 'string',
-					'default' => 'DESC',
-					'enum' => ['ASC', 'DESC'],
-					'description' => __('Sort order', 'data-machine')
-				],
-				'per_page' => [
-					'required' => false,
-					'type' => 'integer',
-					'default' => 50,
-					'minimum' => 1,
-					'maximum' => 100,
-					'description' => __('Number of jobs per page', 'data-machine')
-				],
-				'offset' => [
-					'required' => false,
-					'type' => 'integer',
-					'default' => 0,
-					'minimum' => 0,
-					'description' => __('Offset for pagination', 'data-machine')
-				],
-				'pipeline_id' => [
-					'required' => false,
-					'type' => 'integer',
-					'description' => __('Filter by pipeline ID', 'data-machine')
-				],
-				'flow_id' => [
-					'required' => false,
-					'type' => 'integer',
-					'description' => __('Filter by flow ID', 'data-machine')
-				],
-				'status' => [
-					'required' => false,
-					'type' => 'string',
-					'description' => __('Filter by job status', 'data-machine')
-				]
-			]
-		]);
+		register_rest_route(
+			'datamachine/v1',
+			'/jobs',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( self::class, 'handle_get_jobs' ),
+				'permission_callback' => array( self::class, 'check_permission' ),
+				'args'                => array(
+					'orderby'       => array(
+						'required'    => false,
+						'type'        => 'string',
+						'default'     => 'job_id',
+						'description' => __( 'Order jobs by field', 'data-machine' ),
+					),
+					'order'         => array(
+						'required'    => false,
+						'type'        => 'string',
+						'default'     => 'DESC',
+						'enum'        => array( 'ASC', 'DESC' ),
+						'description' => __( 'Sort order', 'data-machine' ),
+					),
+					'per_page'      => array(
+						'required'    => false,
+						'type'        => 'integer',
+						'default'     => 50,
+						'minimum'     => 1,
+						'maximum'     => 100,
+						'description' => __( 'Number of jobs per page', 'data-machine' ),
+					),
+					'offset'        => array(
+						'required'    => false,
+						'type'        => 'integer',
+						'default'     => 0,
+						'minimum'     => 0,
+						'description' => __( 'Offset for pagination', 'data-machine' ),
+					),
+					'pipeline_id'   => array(
+						'required'    => false,
+						'type'        => 'integer',
+						'description' => __( 'Filter by pipeline ID', 'data-machine' ),
+					),
+					'flow_id'       => array(
+						'required'    => false,
+						'type'        => 'integer',
+						'description' => __( 'Filter by flow ID', 'data-machine' ),
+					),
+					'status'        => array(
+						'required'    => false,
+						'type'        => 'string',
+						'description' => __( 'Filter by job status', 'data-machine' ),
+					),
+					'user_id'       => array(
+						'required'          => false,
+						'type'              => 'integer',
+						'description'       => __( 'Filter by user ID (admin only, non-admins always see own data)', 'data-machine' ),
+						'sanitize_callback' => 'absint',
+					),
+					'parent_job_id' => array(
+						'required'    => false,
+						'type'        => 'integer',
+						'description' => __( 'Filter by parent job ID (for batch child jobs)', 'data-machine' ),
+					),
+					'hide_children' => array(
+						'required'    => false,
+						'type'        => 'boolean',
+						'default'     => false,
+						'description' => __( 'Hide child jobs from top-level list', 'data-machine' ),
+					),
+				),
+			)
+		);
 
 		// GET /datamachine/v1/jobs/{id} - Get specific job details
-		register_rest_route('datamachine/v1', '/jobs/(?P<id>\d+)', [
-			'methods' => 'GET',
-			'callback' => [self::class, 'handle_get_job_by_id'],
-			'permission_callback' => [self::class, 'check_permission'],
-			'args' => [
-				'id' => [
-					'required' => true,
-					'type' => 'integer',
-					'description' => __('Job ID', 'data-machine')
-				]
-			]
-		]);
+		register_rest_route(
+			'datamachine/v1',
+			'/jobs/(?P<id>\d+)',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( self::class, 'handle_get_job_by_id' ),
+				'permission_callback' => array( self::class, 'check_permission' ),
+				'args'                => array(
+					'id' => array(
+						'required'    => true,
+						'type'        => 'integer',
+						'description' => __( 'Job ID', 'data-machine' ),
+					),
+				),
+			)
+		);
 
 		// DELETE /datamachine/v1/jobs - Clear jobs
-		register_rest_route('datamachine/v1', '/jobs', [
-			'methods' => 'DELETE',
-			'callback' => [self::class, 'handle_clear'],
-			'permission_callback' => [self::class, 'check_permission'],
-			'args' => [
-				'type' => [
-					'required' => true,
-					'type' => 'string',
-					'enum' => ['all', 'failed'],
-					'description' => __('Which jobs to clear: all or failed', 'data-machine')
-				],
-				'cleanup_processed' => [
-					'required' => false,
-					'type' => 'boolean',
-					'default' => false,
-					'description' => __('Also clear processed items tracking', 'data-machine')
-				]
-			]
-		]);
+		register_rest_route(
+			'datamachine/v1',
+			'/jobs',
+			array(
+				'methods'             => 'DELETE',
+				'callback'            => array( self::class, 'handle_clear' ),
+				'permission_callback' => array( self::class, 'check_permission' ),
+				'args'                => array(
+					'type'              => array(
+						'required'    => true,
+						'type'        => 'string',
+						'enum'        => array( 'all', 'failed' ),
+						'description' => __( 'Which jobs to clear: all or failed', 'data-machine' ),
+					),
+					'cleanup_processed' => array(
+						'required'    => false,
+						'type'        => 'boolean',
+						'default'     => false,
+						'description' => __( 'Also clear processed items tracking', 'data-machine' ),
+					),
+				),
+			)
+		);
 	}
 
 	/**
 	 * Check if user has permission to manage jobs
 	 */
-	public static function check_permission($request) {
-		if (!current_user_can('manage_options')) {
+	public static function check_permission( $request ) {
+		$request;
+		if ( ! PermissionHelper::can( 'manage_flows' ) ) {
 			return new \WP_Error(
 				'rest_forbidden',
-				__('You do not have permission to manage jobs.', 'data-machine'),
-				['status' => 403]
+				__( 'You do not have permission to manage jobs.', 'data-machine' ),
+				array( 'status' => 403 )
 			);
 		}
 
@@ -142,43 +176,49 @@ class Jobs {
 	 *
 	 * GET /datamachine/v1/jobs
 	 */
-	public static function handle_get_jobs($request) {
-		// Get database service
-		$db_jobs = new \DataMachine\Core\Database\Jobs\Jobs();
+	public static function handle_get_jobs( $request ) {
+		$scoped_user_id  = PermissionHelper::resolve_scoped_user_id( $request );
+		$scoped_agent_id = PermissionHelper::resolve_scoped_agent_id( $request );
 
-		// Build query args
-		$args = [
-			'orderby' => $request->get_param('orderby'),
-			'order' => $request->get_param('order'),
-			'per_page' => $request->get_param('per_page'),
-			'offset' => $request->get_param('offset')
-		];
+		$input = array(
+			'orderby'  => $request->get_param( 'orderby' ),
+			'order'    => $request->get_param( 'order' ),
+			'per_page' => $request->get_param( 'per_page' ),
+			'offset'   => $request->get_param( 'offset' ),
+		);
 
-		// Add optional filters
-		if ($request->get_param('pipeline_id')) {
-			$args['pipeline_id'] = (int) $request->get_param('pipeline_id');
+		if ( null !== $scoped_agent_id ) {
+			$input['agent_id'] = $scoped_agent_id;
+		} elseif ( null !== $scoped_user_id ) {
+			$input['user_id'] = $scoped_user_id;
 		}
-		if ($request->get_param('flow_id')) {
-			$args['flow_id'] = (int) $request->get_param('flow_id');
+		if ( $request->get_param( 'pipeline_id' ) ) {
+			$input['pipeline_id'] = (int) $request->get_param( 'pipeline_id' );
 		}
-		if ($request->get_param('status')) {
-			$args['status'] = sanitize_text_field($request->get_param('status'));
+		if ( $request->get_param( 'flow_id' ) ) {
+			$input['flow_id'] = (int) $request->get_param( 'flow_id' );
+		}
+		if ( $request->get_param( 'status' ) ) {
+			$input['status'] = sanitize_text_field( $request->get_param( 'status' ) );
+		}
+		if ( $request->get_param( 'parent_job_id' ) ) {
+			$input['parent_job_id'] = (int) $request->get_param( 'parent_job_id' );
+		}
+		if ( $request->get_param( 'hide_children' ) ) {
+			$input['hide_children'] = true;
 		}
 
-		// Retrieve jobs
-		$jobs = $db_jobs->get_jobs_for_list_table($args);
-		$total_jobs = $db_jobs->get_jobs_count();
+		$result = ( new GetJobsAbility() )->execute( $input );
 
-		// Add display fields for timestamps
-		$jobs = array_map([self::class, 'add_display_fields'], $jobs);
-
-		return rest_ensure_response([
-			'success' => true,
-			'data' => $jobs,
-			'total' => $total_jobs,
-			'per_page' => $args['per_page'],
-			'offset' => $args['offset']
-		]);
+		return rest_ensure_response(
+			array(
+				'success'  => $result['success'],
+				'data'     => $result['jobs'],
+				'total'    => $result['total'],
+				'per_page' => $result['per_page'],
+				'offset'   => $result['offset'],
+			)
+		);
 	}
 
 	/**
@@ -186,33 +226,25 @@ class Jobs {
 	 *
 	 * GET /datamachine/v1/jobs/{id}
 	 */
-	public static function handle_get_job_by_id($request) {
-		$job_id = $request->get_param('id');
+	public static function handle_get_job_by_id( $request ) {
+		$job_id = (int) $request->get_param( 'id' );
 
-		// Get job from database directly
-		$db_jobs = new \DataMachine\Core\Database\Jobs\Jobs();
-		$job = $db_jobs->get_job($job_id);
+		$result = ( new GetJobsAbility() )->execute( array( 'job_id' => $job_id ) );
 
-		if (!$job) {
-		return new \WP_Error(
-			'job_not_found',
-			sprintf(
-				/* translators: %d: job ID */
-				__('Job %d not found.', 'data-machine'),
-				$job_id
-			),
-			['status' => 404]
-		);
-
+		if ( ! $result['success'] || empty( $result['jobs'] ) ) {
+			return new \WP_Error(
+				'job_not_found',
+				$result['error'] ?? __( 'Job not found.', 'data-machine' ),
+				array( 'status' => 404 )
+			);
 		}
 
-		// Add display fields for timestamps
-		$job = self::add_display_fields($job);
-
-		return rest_ensure_response([
-			'success' => true,
-			'data' => $job
-		]);
+		return rest_ensure_response(
+			array(
+				'success' => true,
+				'data'    => $result['jobs'][0],
+			)
+		);
 	}
 
 	/**
@@ -220,62 +252,32 @@ class Jobs {
 	 *
 	 * DELETE /datamachine/v1/jobs
 	 */
-	public static function handle_clear($request) {
-		$type = $request->get_param('type');
-		$cleanup_processed = $request->get_param('cleanup_processed');
+	public static function handle_clear( $request ) {
+		$type              = $request->get_param( 'type' );
+		$cleanup_processed = (bool) $request->get_param( 'cleanup_processed' );
 
-		$criteria = [];
-		if ($type === 'failed') {
-			$criteria['failed'] = true;
-		} else {
-			$criteria['all'] = true;
-		}
+		$result = ( new DeleteJobsAbility() )->execute(
+			array(
+				'type'              => $type,
+				'cleanup_processed' => $cleanup_processed,
+			)
+		);
 
-		$job_manager = new \DataMachine\Services\JobManager();
-		$result = $job_manager->delete($criteria, $cleanup_processed);
-
-		if (!$result['success']) {
+		if ( ! $result['success'] ) {
 			return new \WP_Error(
 				'delete_failed',
-				__('Failed to delete jobs.', 'data-machine'),
-				['status' => 500]
+				$result['error'] ?? __( 'Failed to delete jobs.', 'data-machine' ),
+				array( 'status' => 500 )
 			);
 		}
 
-		$message_parts = [];
-		/* translators: %d: Number of jobs deleted */
-		/* translators: %d: number of jobs deleted */
-		$message_parts[] = sprintf(esc_html__('Deleted %d jobs', 'data-machine'), $result['jobs_deleted']);
-
-		if ($cleanup_processed && $result['processed_items_cleaned'] > 0) {
-			$message_parts[] = esc_html__('and their associated processed items', 'data-machine');
-		}
-
-		$message = implode(' ', $message_parts) . '.';
-
-		return rest_ensure_response([
-			'success' => true,
-			'message' => $message,
-			'jobs_deleted' => $result['jobs_deleted'],
-			'processed_items_cleaned' => $result['processed_items_cleaned']
-		]);
-	}
-
-	/**
-	 * Add formatted display fields for timestamps.
-	 *
-	 * @param array $job Job data
-	 * @return array Job data with *_display fields added
-	 */
-	private static function add_display_fields( array $job ): array {
-		if ( isset( $job['created_at'] ) ) {
-			$job['created_at_display'] = DateFormatter::format_for_display( $job['created_at'] );
-		}
-
-		if ( isset( $job['completed_at'] ) ) {
-			$job['completed_at_display'] = DateFormatter::format_for_display( $job['completed_at'] );
-		}
-
-		return $job;
+		return rest_ensure_response(
+			array(
+				'success'                 => true,
+				'message'                 => $result['message'],
+				'jobs_deleted'            => $result['deleted_count'],
+				'processed_items_cleaned' => $result['processed_items_cleaned'],
+			)
+		);
 	}
 }

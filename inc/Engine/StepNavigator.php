@@ -11,89 +11,93 @@
 
 namespace DataMachine\Engine;
 
-if (!defined('WPINC')) {
-    die;
+if ( ! defined( 'WPINC' ) ) {
+	die;
 }
 
 class StepNavigator {
 
-    /**
-     * Load flow configuration from engine data storage.
-     */
-    private function getFlowConfig(int $job_id): array {
-        if ($job_id <= 0) {
-            return [];
-        }
+	/**
+	 * Load flow configuration from engine data storage.
+	 */
+	private function getFlowConfig( int $job_id ): array {
+		if ( $job_id <= 0 ) {
+			return array();
+		}
 
-        $engine_data = datamachine_get_engine_data($job_id);
-        return is_array($engine_data['flow_config'] ?? null) ? $engine_data['flow_config'] : [];
-    }
+		$engine_data = datamachine_get_engine_data( $job_id );
+		return is_array( $engine_data['flow_config'] ?? null ) ? $engine_data['flow_config'] : array();
+	}
 
-    /**
-     * Get next flow step ID based on execution order
-     *
-     * Uses centralized engine data for execution context.
-     *
-     * @param string $flow_step_id Current flow step ID
-     * @param array $context Context containing job_id
-     * @return string|null Next flow step ID or null if none
-     */
-    public function get_next_flow_step_id(string $flow_step_id, array $context = []): ?string {
-        $job_id = (int) ($context['job_id'] ?? 0);
-        if ($job_id <= 0) {
-            return null;
-        }
+	/**
+	 * Build the execution plan for navigation, logging invalid plans once.
+	 */
+	private function getExecutionPlan( array $flow_config, int $job_id, string $flow_step_id ): ?ExecutionPlan {
+		try {
+			return ExecutionPlan::from_flow_config( $flow_config );
+		} catch ( \InvalidArgumentException $e ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'Step navigation failed - invalid execution plan',
+				array(
+					'job_id'       => $job_id,
+					'flow_step_id' => $flow_step_id,
+					'error'        => $e->getMessage(),
+				)
+			);
+		}
 
-        $flow_config = $this->getFlowConfig($job_id);
+		return null;
+	}
 
-        $current_step = $flow_config[$flow_step_id] ?? null;
-        if (!$current_step) {
-            return null;
-        }
+	/**
+	 * Get next flow step ID based on execution order
+	 *
+	 * Uses centralized engine data for execution context.
+	 *
+	 * @param string $flow_step_id Current flow step ID
+	 * @param array  $context Context containing job_id
+	 * @return string|null Next flow step ID or null if none
+	 */
+	public function get_next_flow_step_id( string $flow_step_id, array $context = array() ): ?string {
+		$job_id = (int) ( $context['job_id'] ?? 0 );
+		if ( $job_id <= 0 ) {
+			return null;
+		}
 
-        $current_order = $current_step['execution_order'] ?? -1;
-        $next_order = $current_order + 1;
+		$flow_config = $this->getFlowConfig( $job_id );
 
-        foreach ($flow_config as $step_id => $step) {
-            if (($step['execution_order'] ?? -1) === $next_order) {
-                return $step_id;
-            }
-        }
+		if ( ! isset( $flow_config[ $flow_step_id ] ) ) {
+			return null;
+		}
 
-        return null;
-    }
+		$plan = $this->getExecutionPlan( $flow_config, $job_id, $flow_step_id );
+		return $plan ? $plan->next_step_id( $flow_step_id ) : null;
+	}
 
-    /**
-     * Get previous flow step ID based on execution order
-     *
-     * Uses centralized engine data for execution context.
-     *
-     * @param string $flow_step_id Current flow step ID
-     * @param array $context Context containing job_id
-     * @return string|null Previous flow step ID or null if none
-     */
-    public function get_previous_flow_step_id(string $flow_step_id, array $context = []): ?string {
-        $job_id = (int) ($context['job_id'] ?? 0);
-        if ($job_id <= 0) {
-            return null;
-        }
+	/**
+	 * Get previous flow step ID based on execution order
+	 *
+	 * Uses centralized engine data for execution context.
+	 *
+	 * @param string $flow_step_id Current flow step ID
+	 * @param array  $context Context containing job_id
+	 * @return string|null Previous flow step ID or null if none
+	 */
+	public function get_previous_flow_step_id( string $flow_step_id, array $context = array() ): ?string {
+		$job_id = (int) ( $context['job_id'] ?? 0 );
+		if ( $job_id <= 0 ) {
+			return null;
+		}
 
-        $flow_config = $this->getFlowConfig($job_id);
+		$flow_config = $this->getFlowConfig( $job_id );
 
-        $current_step = $flow_config[$flow_step_id] ?? null;
-        if (!$current_step) {
-            return null;
-        }
+		if ( ! isset( $flow_config[ $flow_step_id ] ) ) {
+			return null;
+		}
 
-        $current_order = $current_step['execution_order'] ?? -1;
-        $prev_order = $current_order - 1;
-
-        foreach ($flow_config as $step_id => $step) {
-            if (($step['execution_order'] ?? -1) === $prev_order) {
-                return $step_id;
-            }
-        }
-
-        return null;
-    }
+		$plan = $this->getExecutionPlan( $flow_config, $job_id, $flow_step_id );
+		return $plan ? $plan->previous_step_id( $flow_step_id ) : null;
+	}
 }

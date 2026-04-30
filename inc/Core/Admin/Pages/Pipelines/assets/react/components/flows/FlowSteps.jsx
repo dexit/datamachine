@@ -4,8 +4,14 @@
  * Container for flow step list with data flow arrows.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { useMemo } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import FlowStepCard from './FlowStepCard';
 import DataFlowArrow from '../shared/DataFlowArrow';
 import { isSameId } from '../../utils/ids';
@@ -19,6 +25,7 @@ import { isSameId } from '../../utils/ids';
  * @param {Object}   props.flowConfig       - Flow configuration (keyed by flow_step_id).
  * @param {Object}   props.pipelineConfig   - Pipeline configuration (keyed by pipeline_step_id).
  * @param {Function} props.onStepConfigured - Configure step handler.
+ * @param {Function} props.onQueueClick     - Queue button click handler (opens modal).
  * @return {JSX.Element} Flow steps container.
  */
 export default function FlowSteps( {
@@ -27,6 +34,7 @@ export default function FlowSteps( {
 	flowConfig,
 	pipelineConfig,
 	onStepConfigured,
+	onQueueClick,
 } ) {
 	/**
 	 * Sort flow steps by execution order and match with pipeline steps
@@ -60,8 +68,8 @@ export default function FlowSteps( {
 
 		// Match with pipeline steps
 		return sorted.map( ( flowStep ) => {
-			const pipelineStep = pipelineStepsArray.find(
-				( ps ) => isSameId( ps.pipeline_step_id, flowStep.pipeline_step_id )
+			const pipelineStep = pipelineStepsArray.find( ( ps ) =>
+				isSameId( ps.pipeline_step_id, flowStep.pipeline_step_id )
 			);
 
 			return {
@@ -85,7 +93,7 @@ export default function FlowSteps( {
 				<p>
 					{ __(
 						'No steps configured for this flow.',
-						'datamachine'
+						'data-machine'
 					) }
 				</p>
 			</div>
@@ -114,6 +122,7 @@ export default function FlowSteps( {
 						pipelineStep={ step.pipelineStep }
 						pipelineConfig={ pipelineConfig }
 						onConfigure={ onStepConfigured }
+						onQueueClick={ () => onQueueClick( step.flowStepId ) }
 					/>
 				</div>
 			);

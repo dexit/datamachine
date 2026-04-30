@@ -2,91 +2,123 @@
 /**
  * REST API Authentication Endpoint
  *
- * Provides REST API access to OAuth and authentication operations.
- * Enables programmatic authentication management for external integrations.
- * Requires WordPress manage_options capability.
+ * Thin REST transport layer for authentication operations.
+ * All business logic lives in AuthAbilities — this file only handles
+ * HTTP concerns (route registration, request parsing, response formatting).
  *
  * @package DataMachine\Api
  */
 
 namespace DataMachine\Api;
 
-use DataMachine\Services\AuthProviderService;
-use DataMachine\Services\HandlerService;
+use DataMachine\Abilities\PermissionHelper;
+use DataMachine\Abilities\AuthAbilities;
 use WP_REST_Server;
 
-if (!defined('WPINC')) {
+if ( ! defined( 'WPINC' ) ) {
 	die;
 }
 
 class Auth {
 
+	private static ?AuthAbilities $abilities = null;
+
+	private static function getAbilities(): AuthAbilities {
+		if ( null === self::$abilities ) {
+			self::$abilities = new AuthAbilities();
+		}
+		return self::$abilities;
+	}
+
 	/**
 	 * Register REST API routes
 	 */
 	public static function register() {
-		add_action('rest_api_init', [self::class, 'register_routes']);
+		add_action( 'rest_api_init', array( self::class, 'register_routes' ) );
 	}
 
 	/**
 	 * Register /datamachine/v1/auth endpoints
 	 */
 	public static function register_routes() {
-		register_rest_route('datamachine/v1', '/auth/(?P<handler_slug>[a-zA-Z0-9_\-]+)', [
-			[
-				'methods' => WP_REST_Server::DELETABLE,
-				'callback' => [self::class, 'handle_disconnect_account'],
-				'permission_callback' => [self::class, 'check_permission'],
-				'args' => [
-					'handler_slug' => [
-						'required' => true,
-						'type' => 'string',
-						'sanitize_callback' => 'sanitize_text_field',
-						'description' => __('Handler identifier (e.g., twitter, facebook)', 'data-machine'),
-					],
-				]
-			],
-			[
-				'methods' => 'PUT',
-				'callback' => [self::class, 'handle_save_auth_config'],
-				'permission_callback' => [self::class, 'check_permission'],
-				'args' => [
-					'handler_slug' => [
-						'required' => true,
-						'type' => 'string',
-						'sanitize_callback' => 'sanitize_text_field',
-						'description' => __('Handler identifier', 'data-machine'),
-					],
-				]
-			]
-		]);
+		// List all providers.
+		register_rest_route(
+			'datamachine/v1',
+			'/auth/providers',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( self::class, 'handle_list_providers' ),
+				'permission_callback' => array( self::class, 'check_permission' ),
+			)
+		);
 
-		register_rest_route('datamachine/v1', '/auth/(?P<handler_slug>[a-zA-Z0-9_\-]+)/status', [
-			'methods' => 'GET',
-			'callback' => [self::class, 'handle_check_oauth_status'],
-			'permission_callback' => [self::class, 'check_permission'],
-			'args' => [
-				'handler_slug' => [
-					'required' => true,
-					'type' => 'string',
-					'sanitize_callback' => 'sanitize_text_field',
-					'description' => __('Handler identifier', 'data-machine'),
-				],
-			]
-		]);
+		// Disconnect (DELETE) and save config (PUT) for a handler.
+		register_rest_route(
+			'datamachine/v1',
+			'/auth/(?P<handler_slug>[a-zA-Z0-9_\-]+)',
+			array(
+				array(
+					'methods'             => WP_REST_Server::DELETABLE,
+					'callback'            => array( self::class, 'handle_disconnect_account' ),
+					'permission_callback' => array( self::class, 'check_permission' ),
+					'args'                => self::handler_slug_args(),
+				),
+				array(
+					'methods'             => 'PUT',
+					'callback'            => array( self::class, 'handle_save_auth_config' ),
+					'permission_callback' => array( self::class, 'check_permission' ),
+					'args'                => self::handler_slug_args(),
+				),
+			)
+		);
 
+		// Get auth status for a handler.
+		register_rest_route(
+			'datamachine/v1',
+			'/auth/(?P<handler_slug>[a-zA-Z0-9_\-]+)/status',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( self::class, 'handle_check_oauth_status' ),
+				'permission_callback' => array( self::class, 'check_permission' ),
+				'args'                => self::handler_slug_args(),
+			)
+		);
 
+		// Set token manually.
+		register_rest_route(
+			'datamachine/v1',
+			'/auth/(?P<handler_slug>[a-zA-Z0-9_\-]+)/token',
+			array(
+				'methods'             => 'PUT',
+				'callback'            => array( self::class, 'handle_set_token' ),
+				'permission_callback' => array( self::class, 'check_permission' ),
+				'args'                => self::handler_slug_args(),
+			)
+		);
+
+		// Force token refresh.
+		register_rest_route(
+			'datamachine/v1',
+			'/auth/(?P<handler_slug>[a-zA-Z0-9_\-]+)/refresh',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( self::class, 'handle_refresh' ),
+				'permission_callback' => array( self::class, 'check_permission' ),
+				'args'                => self::handler_slug_args(),
+			)
+		);
 	}
 
 	/**
-	 * Check if user has permission to manage authentication
+	 * Check if user has permission to manage authentication.
 	 */
-	public static function check_permission($request) {
-		if (!current_user_can('manage_options')) {
+	public static function check_permission( $request ) {
+		$request;
+		if ( ! PermissionHelper::can( 'manage_settings' ) ) {
 			return new \WP_Error(
 				'rest_forbidden',
-				__('You do not have permission to manage authentication.', 'data-machine'),
-				['status' => 403]
+				__( 'You do not have permission to manage authentication.', 'data-machine' ),
+				array( 'status' => 403 )
 			);
 		}
 
@@ -94,288 +126,168 @@ class Auth {
 	}
 
 	/**
-	 * Handle account disconnection request
+	 * List all registered auth providers.
+	 *
+	 * GET /datamachine/v1/auth/providers
+	 */
+	public static function handle_list_providers( $request ) {
+		$request;
+		$result = self::getAbilities()->executeListProviders( array() );
+
+		return rest_ensure_response(
+			array(
+				'success' => true,
+				'data'    => $result['providers'] ?? array(),
+			)
+		);
+	}
+
+	/**
+	 * Handle account disconnection request.
 	 *
 	 * DELETE /datamachine/v1/auth/{handler_slug}
 	 */
-	public static function handle_disconnect_account($request) {
-		$handler_slug = sanitize_text_field($request->get_param('handler_slug'));
+	public static function handle_disconnect_account( $request ) {
+		$result = self::getAbilities()->executeDisconnectAuth(
+			array( 'handler_slug' => sanitize_text_field( $request->get_param( 'handler_slug' ) ) )
+		);
 
-		if (empty($handler_slug)) {
-			return new \WP_Error(
-				'missing_handler',
-				__('Handler slug is required', 'data-machine'),
-				['status' => 400]
-			);
-		}
-
-		// Check if handler exists but doesn't require auth
-		$handler_service = new HandlerService();
-		$handler_info = $handler_service->get($handler_slug);
-		if ($handler_info && ($handler_info['requires_auth'] ?? false) === false) {
-			return new \WP_Error(
-				'auth_not_required',
-				__('Authentication is not required for this handler', 'data-machine'),
-				['status' => 400]
-			);
-		}
-
-		// Validate handler exists and supports authentication
-		$auth_service = new AuthProviderService();
-		$auth_instance = $auth_service->getForHandler($handler_slug);
-
-		if (!$auth_instance) {
-			return new \WP_Error(
-				'auth_provider_not_found',
-				__('Authentication provider not found', 'data-machine'),
-				['status' => 404]
-			);
-		}
-
-		// Clear OAuth credentials using centralized function
-		if (method_exists($auth_instance, 'clear_account')) {
-			$cleared = $auth_instance->clear_account();
-		} else {
-			return new \WP_Error(
-				'disconnect_not_supported',
-				__('This handler does not support account disconnection', 'data-machine'),
-				['status' => 500]
-			);
-		}
-
-		if ($cleared) {
-			return rest_ensure_response([
-				'success' => true,
-				'data' => null,
-				/* translators: %s: Service name (e.g., Twitter, Facebook) */
-				'message' => sprintf(__('%s account disconnected successfully', 'data-machine'), ucfirst($handler_slug))
-			]);
-		} else {
-			return new \WP_Error(
-				'disconnect_failed',
-				__('Failed to disconnect account', 'data-machine'),
-				['status' => 500]
-			);
-		}
+		return self::ability_to_response( $result, 'disconnect_auth_error' );
 	}
 
 	/**
-	 * Handle OAuth status check request
+	 * Handle OAuth status check request.
 	 *
 	 * GET /datamachine/v1/auth/{handler_slug}/status
 	 */
-	public static function handle_check_oauth_status($request) {
-		$handler_slug = sanitize_text_field($request->get_param('handler_slug'));
+	public static function handle_check_oauth_status( $request ) {
+		$handler_slug = sanitize_text_field( $request->get_param( 'handler_slug' ) );
 
-		if (empty($handler_slug)) {
-			return new \WP_Error(
-				'missing_handler',
-				__('Handler slug is required', 'data-machine'),
-				['status' => 400]
-			);
+		$result = self::getAbilities()->executeGetAuthStatus(
+			array( 'handler_slug' => $handler_slug )
+		);
+
+		if ( ! $result['success'] ) {
+			return self::ability_to_response( $result, 'get_auth_status_error' );
 		}
 
-		// Check if handler exists and doesn't require auth
-		$handler_service = new HandlerService();
-		$handler_info = $handler_service->get($handler_slug);
-		if ($handler_info && ($handler_info['requires_auth'] ?? false) === false) {
-			return rest_ensure_response([
+		// Pass through relevant fields from the ability result.
+		$data = array( 'handler_slug' => $result['handler_slug'] ?? $handler_slug );
+
+		foreach ( array( 'authenticated', 'requires_auth', 'message', 'oauth_url', 'instructions' ) as $key ) {
+			if ( isset( $result[ $key ] ) ) {
+				$data[ $key ] = $result[ $key ];
+			}
+		}
+
+		return rest_ensure_response(
+			array(
 				'success' => true,
-				'data' => [
-					'authenticated' => true,
-					'requires_auth' => false,
-					'handler_slug' => $handler_slug,
-					'message' => __('Authentication not required for this handler', 'data-machine')
-				]
-			]);
-		}
-
-		// Get auth provider instance via cached service
-		$auth_service = new AuthProviderService();
-		$auth_instance = $auth_service->getForHandler($handler_slug);
-
-
-		if (!$auth_instance) {
-			return new \WP_Error(
-				'auth_provider_not_found',
-				__('Authentication provider not found', 'data-machine'),
-				['status' => 404]
-			);
-		}
-
-		if (!method_exists($auth_instance, 'get_authorization_url')) {
-			return new \WP_Error(
-				'oauth_not_supported',
-				__('This handler does not support OAuth authorization', 'data-machine'),
-				['status' => 400]
-			);
-		}
-
-		// Check configuration first
-		if (method_exists($auth_instance, 'is_configured') && !$auth_instance->is_configured()) {
-			return new \WP_Error(
-				'oauth_not_configured',
-				__('OAuth credentials not configured. Please provide client ID and secret first.', 'data-machine'),
-				['status' => 400]
-			);
-		}
-
-		try {
-			$oauth_url = $auth_instance->get_authorization_url();
-			
-			return rest_ensure_response([
-				'success' => true,
-				'data' => [
-					'oauth_url' => $oauth_url,
-					'handler_slug' => $handler_slug,
-					'instructions' => __('Visit this URL to authorize your account. You will be redirected back to Data Machine upon completion.', 'data-machine')
-				]
-			]);
-		} catch (\Exception $e) {
-			return new \WP_Error(
-				'oauth_url_generation_failed',
-				$e->getMessage(),
-				['status' => 500]
-			);
-		}
+				'data'    => $data,
+			)
+		);
 	}
 
 	/**
-	 * Handle auth configuration save request
+	 * Handle auth configuration save request.
 	 *
 	 * PUT /datamachine/v1/auth/{handler_slug}
 	 */
-	public static function handle_save_auth_config($request) {
-		$handler_slug = sanitize_text_field($request->get_param('handler_slug'));
-
-		if (empty($handler_slug)) {
-			return new \WP_Error(
-				'missing_handler',
-				__('Handler slug is required', 'data-machine'),
-				['status' => 400]
-			);
-		}
-
-		// Check if handler exists but doesn't require auth
-		$handler_service = new HandlerService();
-		$handler_info = $handler_service->get($handler_slug);
-		if ($handler_info && ($handler_info['requires_auth'] ?? false) === false) {
-			return new \WP_Error(
-				'auth_not_required',
-				__('Authentication is not required for this handler', 'data-machine'),
-				['status' => 400]
-			);
-		}
-
-		// Get auth provider instance via cached service
-		$auth_service = new AuthProviderService();
-		$auth_instance = $auth_service->getForHandler($handler_slug);
-
-		if (!$auth_instance || !method_exists($auth_instance, 'get_config_fields')) {
-			return new \WP_Error(
-				'invalid_auth_provider',
-				__('Auth provider not found or invalid', 'data-machine'),
-				['status' => 404]
-			);
-		}
-
-		// Get field definitions for validation
-		$config_fields = $auth_instance->get_config_fields();
-		$config_data = [];
-
-		// OAuth providers: store to oauth_keys; simple auth: store to oauth_account
-		$uses_oauth = method_exists($auth_instance, 'get_authorization_url') || method_exists($auth_instance, 'handle_oauth_callback');
-
-		$existing_config = [];
-		if (method_exists($auth_instance, 'get_config')) {
-			$existing_config = $auth_instance->get_config();
-		} elseif (method_exists($auth_instance, 'get_account')) {
-			// Simple auth might store config in account data
-			$existing_config = $auth_instance->get_account();
-		} else {
-			return new \WP_Error(
-				'config_retrieval_failed',
-				__('Could not retrieve existing configuration', 'data-machine'),
-				['status' => 500]
-			);
-		}
-
-		// Get all request parameters
+	public static function handle_save_auth_config( $request ) {
+		$handler_slug   = sanitize_text_field( $request->get_param( 'handler_slug' ) );
 		$request_params = $request->get_params();
+		unset( $request_params['handler_slug'] );
 
-		// Validate and sanitize each field
-		foreach ($config_fields as $field_name => $field_config) {
-			$value = sanitize_text_field($request_params[$field_name] ?? '');
+		$result = self::getAbilities()->executeSaveAuthConfig(
+			array(
+				'handler_slug' => $handler_slug,
+				'config'       => $request_params,
+			)
+		);
 
-			// Check required fields only if no existing config and value is empty
-			if (($field_config['required'] ?? false) && empty($value) && empty($existing_config[$field_name] ?? '')) {
-				return new \WP_Error(
-					'required_field_missing',
-					/* translators: %s: Field label (e.g., API Key, Client ID) */
-					sprintf(__('%s is required', 'data-machine'), $field_config['label']),
-					['status' => 400]
-				);
-			}
+		return self::ability_to_response( $result, 'save_auth_config_error' );
+	}
 
-			// Use existing value if form value is empty (handles unchanged saves)
-			if (empty($value) && !empty($existing_config[$field_name] ?? '')) {
-				$value = $existing_config[$field_name];
-			}
+	/**
+	 * Handle manual token injection.
+	 *
+	 * PUT /datamachine/v1/auth/{handler_slug}/token
+	 */
+	public static function handle_set_token( $request ) {
+		$handler_slug = sanitize_text_field( $request->get_param( 'handler_slug' ) );
+		$body         = $request->get_json_params();
 
-			$config_data[$field_name] = $value;
+		$result = self::getAbilities()->executeSetAuthToken(
+			array(
+				'handler_slug' => $handler_slug,
+				'account_data' => $body,
+			)
+		);
+
+		return self::ability_to_response( $result, 'set_auth_token_error' );
+	}
+
+	/**
+	 * Handle forced token refresh.
+	 *
+	 * POST /datamachine/v1/auth/{handler_slug}/refresh
+	 */
+	public static function handle_refresh( $request ) {
+		$handler_slug = sanitize_text_field( $request->get_param( 'handler_slug' ) );
+
+		$result = self::getAbilities()->executeRefreshAuth(
+			array( 'handler_slug' => $handler_slug )
+		);
+
+		return self::ability_to_response( $result, 'refresh_auth_error' );
+	}
+
+	// -------------------------------------------------------------------------
+	// Shared helpers
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Common handler_slug route args definition.
+	 *
+	 * @return array Route args.
+	 */
+	private static function handler_slug_args(): array {
+		return array(
+			'handler_slug' => array(
+				'required'          => true,
+				'type'              => 'string',
+				'sanitize_callback' => 'sanitize_text_field',
+				'description'       => __( 'Handler identifier (e.g., twitter, facebook, linkedin)', 'data-machine' ),
+			),
+		);
+	}
+
+	/**
+	 * Convert an ability result to a REST response.
+	 *
+	 * Success results are returned as 200 with the ability's data.
+	 * Failure results are returned as WP_Error with an inferred HTTP status.
+	 *
+	 * @param array  $result     Ability result array.
+	 * @param string $error_code WP_Error code for failures.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	private static function ability_to_response( array $result, string $error_code ) {
+		if ( ! empty( $result['success'] ) ) {
+			return rest_ensure_response( $result );
 		}
 
-		// Skip save if data unchanged
-		if (!empty($existing_config)) {
-			$data_changed = false;
+		$error  = $result['error'] ?? 'Unknown error';
+		$status = 400;
 
-			foreach ($config_data as $field_name => $new_value) {
-				$existing_value = $existing_config[$field_name] ?? '';
-				if ($new_value !== $existing_value) {
-					$data_changed = true;
-					break;
-				}
-			}
-
-			if (!$data_changed) {
-				return rest_ensure_response([
-					'success' => true,
-					'data' => null,
-					'message' => __('Configuration is already up to date - no changes detected', 'data-machine')
-				]);
-			}
+		if ( str_contains( $error, 'not found' ) ) {
+			$status = 404;
+		} elseif ( str_contains( $error, 'not authenticated' ) || str_contains( $error, 'not currently authenticated' ) ) {
+			$status = 409;
+		} elseif ( str_contains( $error, 'Failed' ) || str_contains( $error, 'Could not' ) ) {
+			$status = 500;
 		}
 
-		// OAuth: save API keys; Simple auth: save credentials
-		if ($uses_oauth) {
-			if (method_exists($auth_instance, 'save_config')) {
-				$saved = $auth_instance->save_config($config_data);
-			} else {
-				return new \WP_Error('save_config_not_supported', __('Handler does not support saving config', 'data-machine'));
-			}
-		} else {
-			if (method_exists($auth_instance, 'save_account')) {
-				$saved = $auth_instance->save_account($config_data);
-			} elseif (method_exists($auth_instance, 'save_config')) {
-				// Some simple auth might use save_config (like Bluesky now)
-				$saved = $auth_instance->save_config($config_data);
-			} else {
-				return new \WP_Error('save_account_not_supported', __('Handler does not support saving account', 'data-machine'));
-			}
-		}
-
-		if ($saved) {
-			return rest_ensure_response([
-				'success' => true,
-				'data' => null,
-				'message' => __('Configuration saved successfully', 'data-machine')
-			]);
-		} else {
-			return new \WP_Error(
-				'save_failed',
-				__('Failed to save configuration', 'data-machine'),
-				['status' => 500]
-			);
-		}
+		return new \WP_Error( $error_code, $error, array( 'status' => $status ) );
 	}
 }

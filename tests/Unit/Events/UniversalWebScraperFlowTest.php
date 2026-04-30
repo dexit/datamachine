@@ -36,6 +36,7 @@ class UniversalWebScraperFlowTest extends WP_UnitTestCase {
 	}
 
 	public function stub_http_request( $preempt, $args, $url ) {
+		global $wp_filesystem;
 		$fixtures = [
 			'https://example.test/events' => 'jsonld-with-venue.html',
 			'https://example.test/events-no-venue' => 'jsonld-without-venue.html',
@@ -46,8 +47,8 @@ class UniversalWebScraperFlowTest extends WP_UnitTestCase {
 		}
 
 		$path = dirname( __DIR__, 2 ) . '/fixtures/universal-web-scraper/' . $fixtures[ $url ];
-		$html = file_get_contents( $path );
-		if ( $html === false ) {
+		$html = $wp_filesystem->get_contents( $path );
+		if ( false === $html ) {
 			return $preempt;
 		}
 
@@ -84,7 +85,7 @@ class UniversalWebScraperFlowTest extends WP_UnitTestCase {
 
 	private function assert_has_warning( string $contains ): void {
 		foreach ( $this->log_entries as $log_entry ) {
-			if ( $log_entry['level'] === 'warning' && str_contains( $log_entry['message'], $contains ) ) {
+			if ( 'warning'=== $log_entry['level'] && str_contains( $log_entry['message'], $contains ) ) {
 				return;
 			}
 		}
@@ -95,7 +96,7 @@ class UniversalWebScraperFlowTest extends WP_UnitTestCase {
 	private function assert_no_warning( string $contains ): void {
 		foreach ( $this->log_entries as $log_entry ) {
 			$this->assertFalse(
-				$log_entry['level'] === 'warning' && str_contains( $log_entry['message'], $contains ),
+				'warning'=== $log_entry['level'] && str_contains( $log_entry['message'], $contains ),
 				'Unexpected warning log containing: ' . $contains
 			);
 		}

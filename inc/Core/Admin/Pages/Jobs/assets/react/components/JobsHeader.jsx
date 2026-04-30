@@ -4,8 +4,15 @@
  * Page title and Admin button for the jobs page.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { Button } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * External dependencies
+ */
+import AgentSwitcher from '@shared/components/AgentSwitcher';
 
 const JobsHeader = ( { onOpenModal } ) => {
 	return (
@@ -14,10 +21,8 @@ const JobsHeader = ( { onOpenModal } ) => {
 				{ __( 'Jobs', 'data-machine' ) }
 			</h1>
 			<div className="datamachine-jobs-header-actions">
-				<Button
-					variant="secondary"
-					onClick={ onOpenModal }
-				>
+				<AgentSwitcher />
+				<Button variant="secondary" onClick={ onOpenModal }>
 					{ __( 'Admin', 'data-machine' ) }
 				</Button>
 			</div>

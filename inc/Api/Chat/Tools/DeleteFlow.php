@@ -9,17 +9,16 @@
 
 namespace DataMachine\Api\Chat\Tools;
 
-if (!defined('ABSPATH')) {
+if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-use DataMachine\Engine\AI\Tools\ToolRegistrationTrait;
+use DataMachine\Engine\AI\Tools\BaseTool;
 
-class DeleteFlow {
-	use ToolRegistrationTrait;
+class DeleteFlow extends BaseTool {
 
 	public function __construct() {
-		$this->registerTool('chat', 'delete_flow', [$this, 'getToolDefinition']);
+		$this->registerTool( 'delete_flow', array( $this, 'getToolDefinition' ), array( 'chat' ), array( 'ability' => 'datamachine/delete-flow' ) );
 	}
 
 	/**
@@ -28,18 +27,18 @@ class DeleteFlow {
 	 * @return array Tool definition array
 	 */
 	public function getToolDefinition(): array {
-		return [
-			'class' => self::class,
-			'method' => 'handle_tool_call',
+		return array(
+			'class'       => self::class,
+			'method'      => 'handle_tool_call',
 			'description' => 'Delete a flow.',
-			'parameters' => [
-				'flow_id' => [
-					'type' => 'integer',
-					'required' => true,
-					'description' => 'ID of the flow to delete'
-				]
-			]
-		];
+			'parameters'  => array(
+				'flow_id' => array(
+					'type'        => 'integer',
+					'required'    => true,
+					'description' => 'ID of the flow to delete',
+				),
+			),
+		);
 	}
 
 	/**
@@ -49,39 +48,34 @@ class DeleteFlow {
 	 * @param array $tool_def Tool definition
 	 * @return array Tool execution result
 	 */
-	public function handle_tool_call(array $parameters, array $tool_def = []): array {
-		$flow_id = $parameters['flow_id'] ?? null;
-
-		if (!is_numeric($flow_id) || (int) $flow_id <= 0) {
-			return [
-				'success' => false,
-				'error' => 'flow_id is required and must be a positive integer',
-				'tool_name' => 'delete_flow'
-			];
+	public function handle_tool_call( array $parameters, array $tool_def = array() ): array {
+		$ability = wp_get_ability( 'datamachine/delete-flow' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Delete flow ability not available',
+				'tool_name' => 'delete_flow',
+			);
 		}
 
-		$flow_id = (int) $flow_id;
+		$result = $ability->execute(
+			array(
+				'flow_id' => (int) ( $parameters['flow_id'] ?? 0 ),
+			)
+		);
 
-		$request = new \WP_REST_Request('DELETE', '/datamachine/v1/flows/' . $flow_id);
-		$response = rest_do_request($request);
-		$data = $response->get_data();
-		$status = $response->get_status();
-
-		if ($status >= 400) {
-			return [
-				'success' => false,
-				'error' => $data['message'] ?? 'Failed to delete flow',
-				'tool_name' => 'delete_flow'
-			];
+		if ( ! $this->isAbilitySuccess( $result ) ) {
+			$error = $this->getAbilityError( $result, 'Failed to delete flow' );
+			return $this->buildErrorResponse( $error, 'delete_flow' );
 		}
 
-		return [
-			'success' => true,
-			'data' => [
-				'flow_id' => $flow_id,
-				'message' => 'Flow deleted.'
-			],
-			'tool_name' => 'delete_flow'
-		];
+		return array(
+			'success'   => true,
+			'data'      => array(
+				'flow_id' => $result['flow_id'],
+				'message' => $result['message'] ?? 'Flow deleted.',
+			),
+			'tool_name' => 'delete_flow',
+		);
 	}
 }

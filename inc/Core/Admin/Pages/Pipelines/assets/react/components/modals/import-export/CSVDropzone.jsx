@@ -4,19 +4,25 @@
  * Drag-drop zone for CSV file uploads with browse button fallback.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { useRef } from '@wordpress/element';
 import { Button } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import { useDragDrop } from '../../../hooks/useFormState';
 
 /**
  * CSV Dropzone Component
  *
- * @param {Object} props - Component props
+ * @param {Object}   props                - Component props
  * @param {Function} props.onFileSelected - File selection callback (content, fileName)
- * @param {string} props.fileName - Currently selected file name
- * @param {boolean} props.disabled - Disabled state
- * @returns {React.ReactElement} CSV dropzone
+ * @param {string}   props.fileName       - Currently selected file name
+ * @param {boolean}  props.disabled       - Disabled state
+ * @return {React.ReactElement} CSV dropzone
  */
 export default function CSVDropzone( {
 	onFileSelected,
@@ -29,19 +35,27 @@ export default function CSVDropzone( {
 
 	/**
 	 * Validate and read CSV file
+	 * @param file
 	 */
 	const processFile = ( file ) => {
 		// Validate file type
 		if ( ! file.name.endsWith( '.csv' ) && file.type !== 'text/csv' ) {
-			dragDrop.setError( __( 'Please select a valid CSV file.', 'datamachine' ) );
+			dragDrop.setError(
+				__( 'Please select a valid CSV file.', 'data-machine' )
+			);
 			return;
 		}
 
 		// Validate file size (dynamic limit)
 		const maxSize = window.dataMachineConfig?.maxUploadSize || 10485760; // fallback to 10MB
 		if ( file.size > maxSize ) {
-			const maxSizeMB = Math.round(maxSize / (1024 * 1024));
-			dragDrop.setError( __( `File size exceeds ${maxSizeMB}MB limit.`, 'datamachine' ) );
+			const maxSizeMB = Math.round( maxSize / ( 1024 * 1024 ) );
+			dragDrop.setError(
+				__(
+					`File size exceeds ${ maxSizeMB }MB limit.`,
+					'data-machine'
+				)
+			);
 			return;
 		}
 
@@ -55,13 +69,14 @@ export default function CSVDropzone( {
 			}
 		};
 		reader.onerror = () => {
-			dragDrop.setError( __( 'Failed to read file.', 'datamachine' ) );
+			dragDrop.setError( __( 'Failed to read file.', 'data-machine' ) );
 		};
 		reader.readAsText( file );
 	};
 
 	/**
 	 * Handle file drop
+	 * @param files
 	 */
 	const handleDrop = ( files ) => {
 		if ( files.length > 0 ) {
@@ -71,6 +86,7 @@ export default function CSVDropzone( {
 
 	/**
 	 * Handle file input change
+	 * @param e
 	 */
 	const handleFileInputChange = ( e ) => {
 		const files = e.target.files;
@@ -103,19 +119,19 @@ export default function CSVDropzone( {
 				onDragEnter={ dragDrop.handleDragEnter }
 				onDragLeave={ dragDrop.handleDragLeave }
 				onDragOver={ dragDrop.handleDragOver }
-				onDrop={ dragDrop.handleDrop.bind(null, handleDrop) }
+				onDrop={ dragDrop.handleDrop.bind( null, handleDrop ) }
 				onClick={ ! disabled ? handleBrowseClick : undefined }
 			>
-				<div className="datamachine-csv-dropzone__icon">📄</div>
+				<div className="datamachine-csv-dropzone__icon"></div>
 
 				<p className="datamachine-csv-dropzone__title">
 					{ fileName
-						? __( 'File selected', 'datamachine' )
-						: __( 'Drag and drop CSV file here', 'datamachine' ) }
+						? __( 'File selected', 'data-machine' )
+						: __( 'Drag and drop CSV file here', 'data-machine' ) }
 				</p>
 
 				<p className="datamachine-csv-dropzone__divider">
-					{ __( 'or', 'datamachine' ) }
+					{ __( 'or', 'data-machine' ) }
 				</p>
 
 				<Button
@@ -123,7 +139,7 @@ export default function CSVDropzone( {
 					onClick={ handleBrowseClick }
 					disabled={ disabled }
 				>
-					{ __( 'Browse Files', 'datamachine' ) }
+					{ __( 'Browse Files', 'data-machine' ) }
 				</Button>
 
 				<input

@@ -20,13 +20,8 @@
  * - datamachine_fail_job: Central job failure handling with cleanup and logging
  * - datamachine_log: Central logging operations eliminating logger service discovery
  *
- * SERVICE MANAGERS (Direct method calls, no action hooks):
- * - PipelineManager: Pipeline and step CRUD operations
- * - FlowManager: Flow CRUD operations
- * - FlowStepManager: Flow step configuration operations (handler updates, user messages)
- * - JobManager: Job lifecycle management (create, status updates, failure handling)
- * - ProcessedItemsManager: Deduplication tracking operations
- * - LogsManager: Log file operations (clear, getContent, getMetadata, setLevel)
+ * UTILITIES (Abilities API):
+ * - LogAbilities: Log file operations (write, clear, read, metadata, level management)
  *
  * EXTENSIBILITY EXAMPLES:
  * External plugins can add: datamachine_transform, datamachine_validate, datamachine_backup, datamachine_migrate, datamachine_sync, datamachine_analyze
@@ -35,7 +30,7 @@
  * - WordPress-native action registration: Direct add_action() calls, zero overhead
  * - External plugin extensibility: Standard WordPress action registration patterns
  * - Eliminates code duplication across multiple trigger points
- * - Provides single source of truth for complex operations  
+ * - Provides single source of truth for complex operations
  * - Simplifies call sites from 40+ lines to single action calls
  *
  * @package DataMachine
@@ -51,98 +46,58 @@ if ( ! defined( 'WPINC' ) ) {
 require_once __DIR__ . '/ImportExport.php';
 require_once __DIR__ . '/Engine.php';
 
+use DataMachine\Abilities\EngineAbilities;
+use DataMachine\Abilities\Engine\PipelineBatchScheduler;
+use DataMachine\Engine\Actions\Handlers\MarkItemProcessedHandler;
+use DataMachine\Engine\Actions\Handlers\FailJobHandler;
+use DataMachine\Engine\Actions\Handlers\JobCompleteHandler;
+use DataMachine\Engine\Actions\Handlers\LogHandler;
+
 /**
  * Register core Data Machine action hooks.
  *
  * @since 0.1.0
  */
 function datamachine_register_core_actions() {
-    
-    add_action('datamachine_mark_item_processed', function($flow_step_id, $source_type, $item_identifier, $job_id) {
-        $job_id = (int) $job_id;
 
-        if (!isset($flow_step_id) || !isset($source_type) || !isset($item_identifier)) {
-            do_action('datamachine_log', 'error', 'datamachine_mark_item_processed called with missing required parameters', [
-                'flow_step_id' => $flow_step_id,
-                'source_type' => $source_type,
-                'item_identifier' => substr($item_identifier ?? '', 0, 50) . '...',
-                'job_id' => $job_id,
-                'parameter_provided' => func_num_args() >= 4
-            ]);
-            return;
-        }
+	add_action( 'datamachine_mark_item_processed', array( MarkItemProcessedHandler::class, 'handle' ), 10, 4 );
+	add_action( 'datamachine_fail_job', array( FailJobHandler::class, 'handle' ), 10, 3 );
+	add_action( 'datamachine_job_complete', array( JobCompleteHandler::class, 'handle' ), 10, 2 );
+	add_action( 'datamachine_log', array( LogHandler::class, 'handle' ), 10, 3 );
 
-        if (empty($job_id) || !is_numeric($job_id) || $job_id <= 0) {
-            do_action('datamachine_log', 'error', 'datamachine_mark_item_processed called without valid job_id', [
-                'flow_step_id' => $flow_step_id,
-                'source_type' => $source_type,
-                'item_identifier' => substr($item_identifier, 0, 50) . '...',
-                'job_id' => $job_id,
-                'job_id_type' => gettype($job_id),
-                'parameter_provided' => func_num_args() >= 4
-            ]);
-            return;
-        }
+	// AI library error logging — universal handler for all AI interactions (pipeline agents, chat agents).
+	add_action(
+		'chubes_ai_library_error',
+		function ( $error_data ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'AI Library Error: ' . $error_data['component'] . ' - ' . $error_data['message'],
+				array(
+					'component' => $error_data['component'],
+					'message'   => $error_data['message'],
+					'context'   => $error_data['context'],
+					'timestamp' => $error_data['timestamp'],
+				)
+			);
+		}
+	);
 
-        $processed_items_manager = new \DataMachine\Services\ProcessedItemsManager();
-        $success = $processed_items_manager->add($flow_step_id, $source_type, $item_identifier, $job_id);
-        
-        return $success;
-    }, 10, 4);
+	\DataMachine\Engine\Actions\ImportExport::register();
 
-    // Central job failure hook - routes to JobManager::fail() for consistent failure handling
-    add_action('datamachine_fail_job', function($job_id, $reason, $context_data = []) {
-        $job_id = (int) $job_id;
+	// Pipeline batch fan-out: process chunks and track child completion.
+	add_action(
+		PipelineBatchScheduler::BATCH_HOOK,
+		function ( $parent_job_id ) {
+			$scheduler = new PipelineBatchScheduler();
+			$scheduler->processChunk( (int) $parent_job_id );
+		},
+		10,
+		1
+	);
+	add_action( 'datamachine_job_complete', array( PipelineBatchScheduler::class, 'onChildComplete' ), 20, 2 );
 
-        if (empty($job_id) || $job_id <= 0) {
-            do_action('datamachine_log', 'error', 'datamachine_fail_job called without valid job_id', [
-                'job_id' => $job_id,
-                'reason' => $reason
-            ]);
-            return false;
-        }
-
-        $job_manager = new \DataMachine\Services\JobManager();
-        return $job_manager->fail($job_id, $reason, $context_data);
-    }, 10, 3);
-    
-    // Central logging hook - eliminates logger service discovery across all components  
-    add_action('datamachine_log', function($operation, $param2 = null, $param3 = null, &$result = null) {
-        $management_operations = ['clear_all', 'cleanup', 'set_level'];
-        if (in_array($operation, $management_operations)) {
-            switch ($operation) {
-                case 'clear_all':
-                    $result = datamachine_clear_log_files();
-                    return $result;
-
-                case 'cleanup':
-                    $max_size_mb = $param2 ?? 10;
-                    $max_age_days = $param3 ?? 30;
-                    $result = datamachine_cleanup_log_files($max_size_mb, $max_age_days);
-                    return $result;
-
-                case 'set_level':
-                    return datamachine_set_log_level($param2);
-            }
-        }
-
-        $context = $param3 ?? [];
-
-        $valid_levels = datamachine_get_valid_log_levels();
-        if (!in_array($operation, $valid_levels)) {
-            return false;
-        }
-
-        $function_name = 'datamachine_log_' . $operation;
-        if (function_exists($function_name)) {
-            $function_name($param2, $context);
-            return true;
-        }
-
-        return false;
-    }, 10, 4);
-
-    \DataMachine\Engine\Actions\ImportExport::register();
-    datamachine_register_execution_engine();
-
+	// Register engine abilities (business logic) before hook bridges.
+	new EngineAbilities();
+	datamachine_register_execution_engine();
 }

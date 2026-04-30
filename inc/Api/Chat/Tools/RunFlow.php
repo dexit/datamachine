@@ -3,159 +3,148 @@
  * Run Flow Tool
  *
  * Tool for executing existing flows immediately or scheduling delayed execution.
+ * Delegates to datamachine/run-flow for immediate execution and
+ * datamachine/schedule-flow for delayed/scheduled execution.
  *
  * @package DataMachine\Api\Chat\Tools
  */
 
 namespace DataMachine\Api\Chat\Tools;
 
-if (!defined('ABSPATH')) {
-    exit;
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
 }
 
-use DataMachine\Engine\AI\Tools\ToolRegistrationTrait;
+use DataMachine\Engine\AI\Tools\BaseTool;
 
-class RunFlow {
-    use ToolRegistrationTrait;
+class RunFlow extends BaseTool {
 
-    public function __construct() {
-        $this->registerTool('chat', 'run_flow', [$this, 'getToolDefinition']);
-    }
+	public function __construct() {
+		$this->registerTool( 'run_flow', array( $this, 'getToolDefinition' ), array( 'chat' ), array( 'abilities' => array( 'datamachine/run-flow', 'datamachine/schedule-flow' ) ) );
+	}
 
-    /**
-     * Get tool definition.
-     * Called lazily when tool is first accessed to ensure translations are loaded.
-     *
-     * @return array Tool definition array
-     */
-    public function getToolDefinition(): array {
-        return [
-            'class' => self::class,
-            'method' => 'handle_tool_call',
-            'description' => 'Execute an existing flow immediately or schedule it for later. For IMMEDIATE execution: provide only flow_id (do NOT include timestamp). For SCHEDULED execution: provide flow_id AND a future Unix timestamp. Flows run asynchronously in the background. Use api_query with GET /datamachine/v1/jobs/{job_id} to check execution status.',
-            'parameters' => [
-                'flow_id' => [
-                    'type' => 'integer',
-                    'required' => true,
-                    'description' => 'Flow ID to execute'
-                ],
-                'count' => [
-                    'type' => 'integer',
-                    'required' => false,
-                    'description' => 'Number of times to run the flow (1-10, default 1). Each run spawns an independent job. Use this to process multiple items from a source.'
-                ],
-                'timestamp' => [
-                    'type' => 'integer',
-                    'required' => false,
-                    'description' => 'ONLY for scheduled execution: a future Unix timestamp. OMIT this parameter entirely for immediate execution. Cannot be combined with count > 1.'
-                ]
-            ]
-        ];
-    }
+	/**
+	 * Get tool definition.
+	 * Called lazily when tool is first accessed to ensure translations are loaded.
+	 *
+	 * @return array Tool definition array
+	 */
+	public function getToolDefinition(): array {
+		return array(
+			'class'       => self::class,
+			'method'      => 'handle_tool_call',
+			'description' => 'Execute an existing flow immediately or schedule it for later. For IMMEDIATE execution: provide only flow_id (do NOT include timestamp). For SCHEDULED execution: provide flow_id AND a future Unix timestamp. Flows run asynchronously in the background. Use api_query with GET /datamachine/v1/jobs/{job_id} to check execution status.',
+			'parameters'  => array(
+				'flow_id'   => array(
+					'type'        => 'integer',
+					'required'    => true,
+					'description' => 'Flow ID to execute',
+				),
+				'count'     => array(
+					'type'        => 'integer',
+					'required'    => false,
+					'description' => 'Number of times to run the flow (1-10, default 1). Each run spawns an independent job. Use this to process multiple items from a source.',
+				),
+				'timestamp' => array(
+					'type'        => 'integer',
+					'required'    => false,
+					'description' => 'ONLY for scheduled execution: a future Unix timestamp. OMIT this parameter entirely for immediate execution. Cannot be combined with count > 1.',
+				),
+			),
+		);
+	}
 
-    public function handle_tool_call(array $parameters, array $tool_def = []): array {
-        $flow_id = $parameters['flow_id'] ?? null;
+	public function handle_tool_call( array $parameters, array $tool_def = array() ): array {
+		$flow_id   = $parameters['flow_id'] ?? null;
+		$count     = max( 1, min( 10, (int) ( $parameters['count'] ?? 1 ) ) );
+		$timestamp = $parameters['timestamp'] ?? null;
 
-        if (!is_numeric($flow_id) || (int) $flow_id <= 0) {
-            return [
-                'success' => false,
-                'error' => 'flow_id is required and must be a positive integer',
-                'tool_name' => 'run_flow'
-            ];
-        }
+		if ( ! $flow_id ) {
+			return $this->buildErrorResponse( 'flow_id is required', 'run_flow' );
+		}
 
-        $flow_id = (int) $flow_id;
-        $count = $parameters['count'] ?? 1;
-        $count = max(1, min(10, (int) $count));
-        $timestamp = $parameters['timestamp'] ?? null;
-        $execution_type = 'immediate';
+		// Delayed execution → delegate to schedule-flow.
+		if ( ! empty( $timestamp ) && is_numeric( $timestamp ) && (int) $timestamp > time() ) {
+			if ( $count > 1 ) {
+				return $this->buildErrorResponse(
+					'Cannot schedule multiple runs with a timestamp. Use count only for immediate execution.',
+					'run_flow'
+				);
+			}
 
-        if (!empty($timestamp) && is_numeric($timestamp) && (int) $timestamp > time()) {
-            $timestamp = (int) $timestamp;
-            $execution_type = 'delayed';
-            
-            if ($count > 1) {
-                return [
-                    'success' => false,
-                    'error' => 'Cannot schedule multiple runs with a timestamp. Use count only for immediate execution.',
-                    'tool_name' => 'run_flow'
-                ];
-            }
-        } else {
-            $timestamp = null;
-        }
+			$ability = wp_get_ability( 'datamachine/schedule-flow' );
+			if ( ! $ability ) {
+				return $this->buildErrorResponse( 'Schedule flow ability not available', 'run_flow' );
+			}
 
-        $jobs = [];
-        $flow_name = null;
+			$result = $ability->execute(
+				array(
+					'flow_id'               => (int) $flow_id,
+					'interval_or_timestamp' => (int) $timestamp,
+				)
+			);
 
-        for ($i = 0; $i < $count; $i++) {
-            $body_params = ['flow_id' => $flow_id];
-            if ($timestamp !== null) {
-                $body_params['timestamp'] = $timestamp;
-            }
+			if ( ! $this->isAbilitySuccess( $result ) ) {
+				return $this->buildErrorResponse( $this->getAbilityError( $result, 'Failed to schedule flow' ), 'run_flow' );
+			}
 
-            $request = new \WP_REST_Request('POST', '/datamachine/v1/execute');
-            $request->set_body_params($body_params);
+			return array(
+				'success'   => true,
+				'data'      => array(
+					'flow_id'        => (int) $flow_id,
+					'execution_type' => 'delayed',
+					'scheduled_time' => $result['scheduled_time'] ?? null,
+					'message'        => 'Flow scheduled for execution at the specified time.',
+				),
+				'tool_name' => 'run_flow',
+			);
+		}
 
-            $response = rest_do_request($request);
-            $data = $response->get_data();
-            $status = $response->get_status();
+		// Immediate execution → delegate to run-flow ability.
+		$ability = wp_get_ability( 'datamachine/run-flow' );
+		if ( ! $ability ) {
+			return $this->buildErrorResponse( 'Run flow ability not available', 'run_flow' );
+		}
 
-            if ($status >= 400) {
-                $error_message = $data['message'] ?? 'Failed to execute flow';
-                if (empty($jobs)) {
-                    return [
-                        'success' => false,
-                        'error' => $error_message,
-                        'tool_name' => 'run_flow'
-                    ];
-                }
-                break;
-            }
+		$job_ids = array();
+		$errors  = array();
 
-            if (isset($data['data']['job_id'])) {
-                $jobs[] = $data['data']['job_id'];
-            }
-            if ($flow_name === null && isset($data['data']['flow_name'])) {
-                $flow_name = $data['data']['flow_name'];
-            }
-        }
+		for ( $i = 0; $i < $count; $i++ ) {
+			$result = $ability->execute( array( 'flow_id' => (int) $flow_id ) );
 
-        if ($count === 1) {
-            $response_data = [
-                'flow_id' => $flow_id,
-                'execution_type' => $execution_type,
-                'message' => $execution_type === 'immediate'
-                    ? 'Flow queued for immediate background execution. It will start within seconds. Use job_id to check status.'
-                    : 'Flow scheduled for delayed background execution at the specified time.'
-            ];
-            if (!empty($jobs)) {
-                $response_data['job_id'] = $jobs[0];
-            }
-            if ($flow_name !== null) {
-                $response_data['flow_name'] = $flow_name;
-            }
-        } else {
-            $response_data = [
-                'flow_id' => $flow_id,
-                'execution_type' => $execution_type,
-                'count' => count($jobs),
-                'job_ids' => $jobs,
-                'message' => sprintf(
-                    'Queued %d jobs for flow "%s". Each job will process one item independently.',
-                    count($jobs),
-                    $flow_name ?? "ID {$flow_id}"
-                )
-            ];
-            if ($flow_name !== null) {
-                $response_data['flow_name'] = $flow_name;
-            }
-        }
+			if ( $this->isAbilitySuccess( $result ) ) {
+				$job_ids[] = $result['job_id'] ?? null;
+			} else {
+				$errors[] = $this->getAbilityError( $result, 'Failed to run flow' );
+				if ( empty( $job_ids ) ) {
+					return $this->buildErrorResponse( $errors[0], 'run_flow' );
+				}
+				break;
+			}
+		}
 
-        return [
-            'success' => true,
-            'data' => $response_data,
-            'tool_name' => 'run_flow'
-        ];
-    }
+		$response_data = array(
+			'flow_id'        => (int) $flow_id,
+			'execution_type' => 'immediate',
+			'message'        => 'Flow execution started',
+		);
+
+		if ( isset( $result['flow_name'] ) ) {
+			$response_data['flow_name'] = $result['flow_name'];
+		}
+
+		if ( 1 === $count ) {
+			$response_data['job_id'] = $job_ids[0] ?? null;
+		} else {
+			$response_data['job_ids'] = $job_ids;
+			$response_data['count']   = count( $job_ids );
+			$response_data['message'] = sprintf( 'Queued %d jobs for flow. Each job processes independently.', count( $job_ids ) );
+		}
+
+		return array(
+			'success'   => true,
+			'data'      => $response_data,
+			'tool_name' => 'run_flow',
+		);
+	}
 }

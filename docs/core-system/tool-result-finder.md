@@ -1,6 +1,6 @@
 # ToolResultFinder
 
-**File**: `/inc/Engine/AI/ToolResultFinder.php`
+**File**: `/inc/Engine/AI/Tools/ToolResultFinder.php`
 **Since**: 0.2.0
 
 Universal utility for finding AI tool execution results in data packets. Part of the Universal Engine infrastructure providing reusable data packet interpretation for all step types.
@@ -101,14 +101,14 @@ if ($result) {
 
 ## Integration Patterns
 
-### Update Step Integration
+### Upsert Step Integration
 
-The Update step (`/inc/Core/Steps/Update/UpdateStep.php`) uses ToolResultFinder to locate handler tool results:
+The Upsert step (`/inc/Core/Steps/Upsert/UpsertStep.php`) uses ToolResultFinder to locate handler tool results:
 
 ```php
 use DataMachine\Engine\AI\ToolResultFinder;
 
-class UpdateStep {
+class UpsertStep {
     public function execute(array $payload): array {
         $data = $payload['data'] ?? [];
         $flow_step_config = $payload['flow_step_config'] ?? [];
@@ -128,7 +128,7 @@ class UpdateStep {
         }
 
         // AI did not execute handler tool - fail cleanly
-        do_action('datamachine_log', 'error', 'UpdateStep: AI did not execute handler tool', [
+        do_action('datamachine_log', 'error', 'UpsertStep: AI did not execute handler tool', [
             'expected_handler' => $handler_slug
         ]);
 
@@ -273,7 +273,7 @@ if ($result) {
 ### Code Reuse
 
 Single implementation of tool result search logic eliminates duplication across:
-- Update steps
+- Upsert steps
 - Custom step types
 - Handler verification utilities
 - Debugging tools
@@ -335,7 +335,7 @@ $result = ToolResultFinder::findHandlerResult($data, 'twitter', $type = 'tool_re
 
 ---
 
-**File**: `/inc/Engine/AI/ToolResultFinder.php`
+**File**: `/inc/Engine/AI/Tools/ToolResultFinder.php`
 **Since**: 0.2.0
 **Methods**: `findHandlerResult(array $data, string $handler): ?array`
-**Usage**: Update steps, custom step types, handler verification utilities
+**Usage**: Upsert steps, custom step types, handler verification utilities

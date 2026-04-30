@@ -11,17 +11,16 @@
 
 namespace DataMachine\Api\Chat\Tools;
 
-if (!defined('ABSPATH')) {
+if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-use DataMachine\Engine\AI\Tools\ToolRegistrationTrait;
+use DataMachine\Engine\AI\Tools\BaseTool;
 
-class ReadLogs {
-	use ToolRegistrationTrait;
+class ReadLogs extends BaseTool {
 
 	public function __construct() {
-		$this->registerTool('chat', 'read_logs', [$this, 'getToolDefinition']);
+		$this->registerTool( 'read_logs', array( $this, 'getToolDefinition' ), array( 'chat' ), array( 'ability' => 'datamachine/read-logs' ) );
 	}
 
 	/**
@@ -30,43 +29,48 @@ class ReadLogs {
 	 * @return array Tool definition array
 	 */
 	public function getToolDefinition(): array {
-		return [
-			'class' => self::class,
-			'method' => 'handle_tool_call',
+		return array(
+			'class'       => self::class,
+			'method'      => 'handle_tool_call',
 			'description' => $this->buildDescription(),
-			'parameters' => [
-				'agent_type' => [
-					'type' => 'string',
-					'required' => false,
-					'description' => 'Log source: "pipeline" (default) for job execution logs, "chat" for chat agent logs'
-				],
-				'mode' => [
-					'type' => 'string',
-					'required' => false,
-					'description' => 'Content mode: "recent" (default) or "full"'
-				],
-				'limit' => [
-					'type' => 'integer',
-					'required' => false,
-					'description' => 'Max entries for recent mode (default: 200, max: 10000)'
-				],
-				'job_id' => [
-					'type' => 'integer',
-					'required' => false,
-					'description' => 'Filter logs by job ID'
-				],
-				'pipeline_id' => [
-					'type' => 'integer',
-					'required' => false,
-					'description' => 'Filter logs by pipeline ID'
-				],
-				'flow_id' => [
-					'type' => 'integer',
-					'required' => false,
-					'description' => 'Filter logs by flow ID'
-				]
-			]
-		];
+			'parameters'  => array(
+				'agent_id'    => array(
+					'type'        => 'integer',
+					'required'    => false,
+					'description' => 'Agent ID to read logs for. Omit for all agents.',
+				),
+				'context'     => array(
+					'type'        => 'string',
+					'required'    => false,
+					'description' => 'Deprecated label only. Use agent_id instead.',
+				),
+				'mode'        => array(
+					'type'        => 'string',
+					'required'    => false,
+					'description' => 'Content mode: "recent" (default) or "full"',
+				),
+				'limit'       => array(
+					'type'        => 'integer',
+					'required'    => false,
+					'description' => 'Max entries for recent mode (default: 200, max: 10000)',
+				),
+				'job_id'      => array(
+					'type'        => 'integer',
+					'required'    => false,
+					'description' => 'Filter logs by job ID',
+				),
+				'pipeline_id' => array(
+					'type'        => 'integer',
+					'required'    => false,
+					'description' => 'Filter logs by pipeline ID',
+				),
+				'flow_id'     => array(
+					'type'        => 'integer',
+					'required'    => false,
+					'description' => 'Filter logs by flow ID',
+				),
+			),
+		);
 	}
 
 	/**
@@ -75,11 +79,11 @@ class ReadLogs {
 	 * @return string Tool description
 	 */
 	private function buildDescription(): string {
-		return 'Read Data Machine logs for troubleshooting jobs, flows, and pipelines.
+		return 'Read Data Machine logs for troubleshooting jobs, flows, pipelines, and system operations.
 
-AGENT TYPES:
-- pipeline (default): Logs from job/flow execution - use this for troubleshooting failed jobs
-- chat: Logs from chat agent operations - use this to check your own activity
+SCOPE:
+- Filter by explicit agent_id when you want a single agent
+- Omit agent_id to read across all agents
 
 FILTERS (all optional, combined with AND logic):
 - job_id: Filter to specific job execution
@@ -93,7 +97,8 @@ MODES:
 TIPS:
 - Start with job_id filter when troubleshooting a specific failed job
 - Use flow_id to see all executions of a particular flow
-- Check chat logs to review your own recent operations';
+- Check chat logs to review your own recent operations
+- Check system logs for database issues, authentication errors, or service failures';
 	}
 
 	/**
@@ -103,42 +108,57 @@ TIPS:
 	 * @param array $tool_def Tool definition
 	 * @return array Tool execution result
 	 */
-	public function handle_tool_call(array $parameters, array $tool_def = []): array {
-		$query_params = [
-			'agent_type' => $parameters['agent_type'] ?? 'pipeline',
-			'mode' => $parameters['mode'] ?? 'recent',
-			'limit' => $parameters['limit'] ?? 200
-		];
-
-		if (!empty($parameters['job_id'])) {
-			$query_params['job_id'] = (int) $parameters['job_id'];
-		}
-		if (!empty($parameters['pipeline_id'])) {
-			$query_params['pipeline_id'] = (int) $parameters['pipeline_id'];
-		}
-		if (!empty($parameters['flow_id'])) {
-			$query_params['flow_id'] = (int) $parameters['flow_id'];
+	public function handle_tool_call( array $parameters, array $tool_def = array() ): array {
+		$ability = wp_get_ability( 'datamachine/read-logs' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Read logs ability not available',
+				'tool_name' => 'read_logs',
+			);
 		}
 
-		$request = new \WP_REST_Request('GET', '/datamachine/v1/logs/content');
-		$request->set_query_params($query_params);
+		$input = array(
+			'mode'  => $parameters['mode'] ?? 'recent',
+			'limit' => $parameters['limit'] ?? 200,
+		);
 
-		$response = rest_do_request($request);
-		$data = $response->get_data();
-		$status = $response->get_status();
-
-		if ($status >= 400 || !($data['success'] ?? false)) {
-			return [
-				'success' => false,
-				'error' => $data['message'] ?? 'Failed to read logs',
-				'tool_name' => 'read_logs'
-			];
+		if ( isset( $parameters['agent_id'] ) && (int) $parameters['agent_id'] > 0 ) {
+			$input['agent_id'] = (int) $parameters['agent_id'];
 		}
 
-		return [
-			'success' => true,
-			'data' => $data,
-			'tool_name' => 'read_logs'
-		];
+		if ( ! empty( $parameters['job_id'] ) ) {
+			$input['job_id'] = (int) $parameters['job_id'];
+		}
+		if ( ! empty( $parameters['pipeline_id'] ) ) {
+			$input['pipeline_id'] = (int) $parameters['pipeline_id'];
+		}
+		if ( ! empty( $parameters['flow_id'] ) ) {
+			$input['flow_id'] = (int) $parameters['flow_id'];
+		}
+
+		$result = $ability->execute( $input );
+
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'read_logs',
+			);
+		}
+
+		if ( ! ( $result['success'] ?? false ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result['error'] ?? $result['message'] ?? 'Failed to read logs',
+				'tool_name' => 'read_logs',
+			);
+		}
+
+		return array(
+			'success'   => true,
+			'data'      => $result,
+			'tool_name' => 'read_logs',
+		);
 	}
 }

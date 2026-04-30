@@ -2,10 +2,18 @@
  * Flow card component.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { useCallback, useState, useRef, useEffect } from '@wordpress/element';
-import { useQueryClient } from '@tanstack/react-query';
+/**
+ * External dependencies
+ */
 import { Card, CardBody, CardDivider } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import FlowHeader from './FlowHeader';
 import FlowSteps from './FlowSteps';
 import FlowFooter from './FlowFooter';
@@ -15,8 +23,9 @@ import {
 	useDuplicateFlow,
 	useRunFlow,
 } from '../../queries/flows';
-import { fetchFlow } from '../../utils/api';
+import { useStepTypes } from '../../queries/config';
 import { useUIStore } from '../../stores/uiStore';
+import useFlowReconciliation from '../../hooks/useFlowReconciliation';
 
 import { MODAL_TYPES } from '../../utils/constants';
 import { isSameId } from '../../utils/ids';
@@ -41,20 +50,17 @@ function FlowCardContent( props ) {
 	const deleteFlowMutation = useDeleteFlow();
 	const duplicateFlowMutation = useDuplicateFlow();
 	const runFlowMutation = useRunFlow();
-	const queryClient = useQueryClient();
+	const { data: stepTypes = {} } = useStepTypes();
 	const { openModal } = useUIStore();
+	const { optimisticLastRunDisplay, reconcile } = useFlowReconciliation();
 
 	// Run success state for temporary button feedback
 	const [ runSuccess, setRunSuccess ] = useState( false );
-	const [ optimisticLastRunDisplay, setOptimisticLastRunDisplay ] =
-		useState( null );
-	const reconcileTokenRef = useRef( 0 );
 	const successTimeout = useRef( null );
 
 	// Cleanup timeout on unmount
 	useEffect( () => {
 		return () => {
-			reconcileTokenRef.current += 1;
 			if ( successTimeout.current ) {
 				clearTimeout( successTimeout.current );
 			}
@@ -93,7 +99,7 @@ function FlowCardContent( props ) {
 				alert(
 					__(
 						'An error occurred while deleting the flow',
-						'datamachine'
+						'data-machine'
 					)
 				);
 			}
@@ -122,7 +128,7 @@ function FlowCardContent( props ) {
 				alert(
 					__(
 						'An error occurred while duplicating the flow',
-						'datamachine'
+						'data-machine'
 					)
 				);
 			}
@@ -130,83 +136,11 @@ function FlowCardContent( props ) {
 		[ duplicateFlowMutation, onFlowDuplicated, currentFlowData.pipeline_id ]
 	);
 
-	const sleep = useCallback(
-		( ms ) => new Promise( ( r ) => setTimeout( r, ms ) ),
-		[]
-	);
-
-	const reconcileFlowAfterRun = useCallback(
-		async ( flowId, pipelineId, baselineLastRun, token ) => {
-			const delays = [ 500, 1000, 2000, 4000, 8000 ];
-
-			for ( const delay of delays ) {
-				await sleep( delay );
-
-				if ( reconcileTokenRef.current !== token ) {
-					return;
-				}
-
-				try {
-					const response = await fetchFlow( flowId );
-					if ( ! response?.success || ! response?.data ) {
-						continue;
-					}
-
-					const updatedFlow = response.data;
-
-					queryClient.setQueryData(
-						[ 'flows', 'single', flowId ],
-						updatedFlow
-					);
-
-					if ( pipelineId ) {
-						queryClient.setQueriesData(
-							{ queryKey: [ 'flows', pipelineId ], exact: false },
-							( oldData ) => {
-								if (
-									! oldData?.flows ||
-									! Array.isArray( oldData.flows )
-								) {
-									return oldData;
-								}
-
-								return {
-									...oldData,
-									flows: oldData.flows.map( ( existingFlow ) =>
-										isSameId( existingFlow.flow_id, flowId )
-											? updatedFlow
-											: existingFlow
-									),
-								};
-							}
-						);
-					}
-
-					if (
-						updatedFlow.last_run &&
-						updatedFlow.last_run !== baselineLastRun
-					) {
-						setOptimisticLastRunDisplay( null );
-						return;
-					}
-				} catch ( err ) {
-					continue;
-				}
-			}
-		},
-		[ queryClient, sleep ]
-	);
-
 	/**
 	 * Handle flow execution
 	 */
 	const handleRun = useCallback(
 		async ( flowId ) => {
-			const token = reconcileTokenRef.current + 1;
-			reconcileTokenRef.current = token;
-
-			setOptimisticLastRunDisplay( __( 'Queued', 'datamachine' ) );
-
 			try {
 				await runFlowMutation.mutateAsync( flowId );
 				setRunSuccess( true );
@@ -214,21 +148,19 @@ function FlowCardContent( props ) {
 					setRunSuccess( false );
 				}, 2000 );
 
-				reconcileFlowAfterRun(
+				reconcile( {
 					flowId,
-					currentFlowData.pipeline_id,
-					currentFlowData.last_run,
-					token
-				);
+					pipelineId: currentFlowData.pipeline_id,
+					baselineLastRun: currentFlowData.last_run,
+				} );
 			} catch ( error ) {
-				setOptimisticLastRunDisplay( null );
 				// eslint-disable-next-line no-console
 				console.error( 'Flow execution error:', error );
 				// eslint-disable-next-line no-alert, no-undef
 				alert(
 					__(
 						'An error occurred while running the flow',
-						'datamachine'
+						'data-machine'
 					)
 				);
 			}
@@ -236,7 +168,7 @@ function FlowCardContent( props ) {
 		[
 			currentFlowData.last_run,
 			currentFlowData.pipeline_id,
-			reconcileFlowAfterRun,
+			reconcile,
 			runFlowMutation,
 		]
 	);
@@ -261,37 +193,85 @@ function FlowCardContent( props ) {
 	);
 
 	/**
-	 * Handle step configuration
+	 * Handle memory files button click - opens flow memory files modal
+	 */
+	const handleMemoryFiles = useCallback(
+		( flowId ) => {
+			openModal( MODAL_TYPES.FLOW_MEMORY_FILES, {
+				flowId,
+				flowName: currentFlowData.flow_name,
+			} );
+		},
+		[ currentFlowData.flow_id, currentFlowData.flow_name, openModal ]
+	);
+
+	/**
+	 * Handle queue button click - opens queue management modal
+	 */
+	const handleQueue = useCallback(
+		( flowStepId ) => {
+			openModal( MODAL_TYPES.FLOW_QUEUE, {
+				flowId: currentFlowData.flow_id,
+				flowStepId,
+				flowName: currentFlowData.flow_name,
+				pipelineId: currentFlowData.pipeline_id,
+			} );
+		},
+		[ currentFlowData.flow_id, currentFlowData.flow_name, currentFlowData.pipeline_id, openModal ]
+	);
+
+	/**
+	 * Handle step configuration.
+	 *
+	 * @param {string}      flowStepId      Flow step ID.
+	 * @param {string|null} specificHandler  Handler slug to configure, or null.
+	 * @param {boolean}     addMode         When true, opens selection modal to add another handler.
 	 */
 	const handleStepConfigured = useCallback(
-		( flowStepId ) => {
+		( flowStepId, specificHandler = null, addMode = false ) => {
 			const flowStepConfig =
 				currentFlowData.flow_config?.[ flowStepId ] || {};
 			const pipelineStepId = flowStepConfig.pipeline_step_id;
-			const pipelineStep = Object.values( pipelineConfig ).find(
-				( s ) => isSameId( s.pipeline_step_id, pipelineStepId )
+			const pipelineStep = Object.values( pipelineConfig ).find( ( s ) =>
+				isSameId( s.pipeline_step_id, pipelineStepId )
 			);
+
+			const stepType = pipelineStep?.step_type || flowStepConfig.step_type;
+			const isMultiHandlerStep = stepTypes[ stepType ]?.multi_handler === true;
+			const handlerSlugs = isMultiHandlerStep
+				? ( flowStepConfig.handler_slugs || [] )
+				: ( flowStepConfig.handler_slug ? [ flowStepConfig.handler_slug ] : [] );
+			const primarySlug = handlerSlugs[0] || '';
 
 			// Build data for handler modals
 			const data = {
 				flowStepId,
-				handlerSlug: flowStepConfig.handler_slug || '',
-				stepType: pipelineStep?.step_type || flowStepConfig.step_type,
+				handlerSlug: specificHandler || primarySlug,
+				handlerSlugs,
+				stepType,
 				pipelineId: currentFlowData.pipeline_id,
 				flowId: currentFlowData.flow_id,
-				currentSettings: flowStepConfig.handler_config || {},
+				currentSettings: specificHandler
+					? ( flowStepConfig.handler_configs?.[ specificHandler ] || {} )
+					: ( isMultiHandlerStep ? ( flowStepConfig.handler_configs?.[ primarySlug ] || {} ) : ( flowStepConfig.handler_config || {} ) ),
+				addMode,
 			};
 
-			// If no handler selected, open handler selection modal first
-			if ( ! flowStepConfig.handler_slug ) {
+			if ( addMode || ! primarySlug ) {
+				// Adding a new handler or no handler yet — open selection modal.
 				openModal( MODAL_TYPES.HANDLER_SELECTION, {
-					stepType: data.stepType,
-					flowStepId: data.flowStepId,
-					pipelineId: data.pipelineId,
-					flowId: data.flowId,
+					...data,
+					addMode: true,
+				} );
+			} else if ( specificHandler ) {
+				// Configuring a specific existing handler.
+				openModal( MODAL_TYPES.HANDLER_SETTINGS, {
+					...data,
+					handlerSlug: specificHandler,
+					currentSettings: isMultiHandlerStep ? ( flowStepConfig.handler_configs?.[ specificHandler ] || {} ) : ( flowStepConfig.handler_config || {} ),
 				} );
 			} else {
-				// If handler already selected, open settings modal directly
+				// Default: open settings for primary handler.
 				openModal( MODAL_TYPES.HANDLER_SETTINGS, data );
 			}
 		},
@@ -300,6 +280,7 @@ function FlowCardContent( props ) {
 			currentFlowData.pipeline_id,
 			currentFlowData.flow_id,
 			pipelineConfig,
+			stepTypes,
 			openModal,
 		]
 	);
@@ -322,6 +303,7 @@ function FlowCardContent( props ) {
 					onDuplicate={ handleDuplicate }
 					onRun={ handleRun }
 					onSchedule={ handleSchedule }
+					onMemoryFiles={ handleMemoryFiles }
 					runSuccess={ runSuccess }
 				/>
 
@@ -333,6 +315,7 @@ function FlowCardContent( props ) {
 					flowConfig={ currentFlowData.flow_config || {} }
 					pipelineConfig={ pipelineConfig }
 					onStepConfigured={ handleStepConfigured }
+					onQueueClick={ handleQueue }
 				/>
 
 				<CardDivider />
@@ -341,6 +324,8 @@ function FlowCardContent( props ) {
 					flowId={ currentFlowData.flow_id }
 					scheduling={ {
 						interval: currentFlowData.scheduling_config?.interval,
+						scheduled_time:
+							currentFlowData.scheduling_config?.scheduled_time,
 						last_run_display:
 							optimisticLastRunDisplay ||
 							currentFlowData.last_run_display,

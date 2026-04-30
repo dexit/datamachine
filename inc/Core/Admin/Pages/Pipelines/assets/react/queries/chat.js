@@ -1,123 +1,80 @@
 /**
  * Chat API Queries
  *
- * TanStack Query hooks for chat endpoint interactions.
+ * TanStack Query hooks for chat session management.
+ * Message sending and continuation loops are handled by
+ * @extrachill/chat's useChat hook — see ChatSidebar.jsx.
  */
 
+/**
+ * WordPress dependencies
+ */
 import apiFetch from '@wordpress/api-fetch';
+/**
+ * External dependencies
+ */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-
 /**
- * Fetch existing chat session
- *
- * @param {string|null} sessionId - Session ID to fetch
- * @returns {object} TanStack Query object with session data
+ * Internal dependencies
  */
-export function useChatSession(sessionId) {
-	return useQuery({
-		queryKey: ['chat-session', sessionId],
-		queryFn: async () => {
-			const response = await apiFetch({
-				path: `/datamachine/v1/chat/${sessionId}`,
-				method: 'GET',
-			});
-
-			if (!response.success) {
-				throw new Error(response.message || 'Failed to fetch session');
-			}
-
-			return response.data;
-		},
-		enabled: !!sessionId,
-		staleTime: Infinity,
-		retry: false,
-	});
-}
-
-/**
- * Send a chat message mutation
- *
- * @returns {object} TanStack Query mutation object
- */
-export function useChatMutation() {
-	const queryClient = useQueryClient();
-
-	return useMutation({
-		mutationFn: async ({ message, sessionId, selectedPipelineId, requestId }) => {
-			const response = await apiFetch({
-				path: '/datamachine/v1/chat',
-				method: 'POST',
-				headers: {
-					'X-Request-ID': requestId,
-				},
-				data: {
-					message,
-					session_id: sessionId || undefined,
-					selected_pipeline_id: selectedPipelineId || undefined,
-				},
-			});
-
-			if (!response.success) {
-				throw new Error(response.message || 'Chat request failed');
-			}
-
-			return response.data;
-		},
-		onSuccess: () => {
-			// Invalidate sessions list to reflect new/updated session
-			queryClient.invalidateQueries({ queryKey: ['chat-sessions'] });
-		},
-	});
-}
+import { client } from '@shared/utils/api';
 
 /**
  * Fetch list of chat sessions for current user
  *
- * @param {number} limit - Maximum sessions to return
- * @returns {object} TanStack Query object with sessions data
- */
-export function useChatSessions(limit = 20) {
-	return useQuery({
-		queryKey: ['chat-sessions', limit],
+ * Uses the shared API client so the agent interceptor automatically
+ * injects agent_id when an agent is selected in the AgentSwitcher.
+ *
+ * @param {number} limit     - Maximum sessions to return
+	 * @param {string|null} context - Optional session context filter
+	 * @return {Object} TanStack Query object with sessions data
+	 */
+export function useChatSessions( limit = 20, context = null ) {
+	return useQuery( {
+		queryKey: [ 'chat-sessions', limit, context ],
 		queryFn: async () => {
-			const response = await apiFetch({
-				path: `/datamachine/v1/chat/sessions?limit=${limit}`,
-				method: 'GET',
-			});
+			const response = await client.get( '/chat/sessions', {
+				limit,
+				context: context || undefined,
+			} );
 
-			if (!response.success) {
-				throw new Error(response.message || 'Failed to fetch sessions');
+			if ( ! response.success ) {
+				throw new Error(
+					response.message || 'Failed to fetch sessions'
+				);
 			}
 
 			return response.data;
 		},
 		staleTime: 30000, // 30 seconds
-	});
+	} );
 }
 
 /**
  * Delete a chat session mutation
  *
- * @returns {object} TanStack Query mutation object
+ * @return {Object} TanStack Query mutation object
  */
 export function useDeleteChatSession() {
 	const queryClient = useQueryClient();
 
-	return useMutation({
-		mutationFn: async (sessionId) => {
-			const response = await apiFetch({
-				path: `/datamachine/v1/chat/${sessionId}`,
+	return useMutation( {
+		mutationFn: async ( sessionId ) => {
+			const response = await apiFetch( {
+				path: `/datamachine/v1/chat/${ sessionId }`,
 				method: 'DELETE',
-			});
+			} );
 
-			if (!response.success) {
-				throw new Error(response.message || 'Failed to delete session');
+			if ( ! response.success ) {
+				throw new Error(
+					response.message || 'Failed to delete session'
+				);
 			}
 
 			return response.data;
 		},
 		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: ['chat-sessions'] });
+			queryClient.invalidateQueries( { queryKey: [ 'chat-sessions' ] } );
 		},
-	});
+	} );
 }

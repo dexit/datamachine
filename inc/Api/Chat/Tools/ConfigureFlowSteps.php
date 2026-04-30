@@ -4,6 +4,7 @@
  *
  * Configures handler settings or AI user messages on flow steps.
  * Supports both single-step and bulk pipeline-scoped operations.
+ * Delegates to concrete FlowStep abilities for core logic.
  *
  * @package DataMachine\Api\Chat\Tools
  * @since 0.4.2
@@ -11,523 +12,695 @@
 
 namespace DataMachine\Api\Chat\Tools;
 
-if (!defined('ABSPATH')) {
-    exit;
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
 }
 
-use DataMachine\Engine\AI\Tools\ToolRegistrationTrait;
-use DataMachine\Services\FlowStepManager;
-use DataMachine\Services\HandlerService;
-use DataMachine\Core\Database\Flows\Flows as FlowsDB;
+use DataMachine\Engine\AI\Tools\BaseTool;
 
-class ConfigureFlowSteps {
-    use ToolRegistrationTrait;
+class ConfigureFlowSteps extends BaseTool {
 
-    public function __construct() {
-        $this->registerTool('chat', 'configure_flow_steps', [$this, 'getToolDefinition']);
-    }
+	public function __construct() {
+		$this->registerTool( 'configure_flow_steps', array( $this, 'getToolDefinition' ), array( 'chat' ), array( 'abilities' => array( 'datamachine/update-flow-step', 'datamachine/validate-handler', 'datamachine/configure-flow-steps', 'datamachine/validate-flow-steps-config' ) ) );
+	}
 
-    /**
-     * Get tool definition.
-     * Called lazily when tool is first accessed to ensure translations are loaded.
-     *
-     * @return array Tool definition array
-     */
-    public function getToolDefinition(): array {
-        $handler_docs = HandlerDocumentation::buildAllHandlersSections();
+	/**
+	 * Get tool definition.
+	 * Called lazily when tool is first accessed to ensure translations are loaded.
+	 *
+	 * @return array Tool definition array
+	 */
+	public function getToolDefinition(): array {
+		$description = 'Configure flow steps with handlers or AI user messages. REQUIRES EXPLICIT TARGETING to prevent accidental bulk updates.' . "\n\n"
+			. 'SELECTION MODES (all explicit):' . "\n"
+			. '1. By flow_step_id: flow_step_id="18_abc_138" (single) or flow_step_ids=["18_abc_138","18_abc_137"] (multiple)' . "\n"
+			. '2. By handler within pipeline: pipeline_id=18, handler_slug="dice_fm" (only flows using dice_fm)' . "\n"
+			. '3. By handler globally: handler_slug="dice_fm" (all flows using dice_fm across ALL pipelines)' . "\n"
+			. '4. All flows in pipeline (explicit): pipeline_id=18, all_flows=true' . "\n"
+			. '5. Cross-pipeline: updates=[{flow_id, step_configs}] for different settings per flow' . "\n\n"
+			. 'SAFETY: pipeline_id alone will ERROR. You must also provide handler_slug (filter), all_flows=true, or specific flow_step_id(s).' . "\n\n"
+			. 'HANDLER SWITCHING:' . "\n"
+			. '- Use target_handler_slug to switch handlers' . "\n"
+			. '- field_map maps old fields to new fields (e.g. {"endpoint_url": "source_url"})' . "\n"
+			. '- Fields with matching names auto-map without explicit field_map' . "\n\n"
+			. 'PER-FLOW CONFIG (bulk mode):' . "\n"
+			. '- flow_configs: [{flow_id: 9, handler_config: {source_url: "..."}}]' . "\n"
+			. '- Per-flow config merges with shared handler_config (per-flow takes precedence)' . "\n\n"
+			. 'BEFORE CONFIGURING:' . "\n"
+			. '- Use get_handler_defaults or api_query (/datamachine/v1/handlers/{slug}) to discover available handlers and their config fields' . "\n"
+			. '- Query existing flows to learn established patterns' . "\n"
+			. '- Only use handler_config fields returned by discovery - unknown fields are rejected';
 
-        $description = 'Configure flow steps with handlers or AI user messages. Supports single-step or bulk operations.' . "\n\n"
-            . 'MODES:' . "\n"
-            . '- Single: Provide flow_step_id to configure one step' . "\n"
-            . '- Bulk: Provide pipeline_id + filters to configure multiple flows at once' . "\n\n"
-            . 'HANDLER SWITCHING:' . "\n"
-            . '- Use target_handler_slug to switch handlers' . "\n"
-            . '- field_map maps old fields to new fields (e.g. {"endpoint_url": "source_url"})' . "\n"
-            . '- Fields with matching names auto-map without explicit field_map' . "\n\n"
-            . 'PER-FLOW CONFIG (bulk mode):' . "\n"
-            . '- flow_configs: [{flow_id: 9, handler_config: {source_url: "..."}}]' . "\n"
-            . '- Per-flow config merges with shared handler_config (per-flow takes precedence)' . "\n\n"
-            . 'BEFORE CONFIGURING:' . "\n"
-            . '- Query existing flows to learn established patterns' . "\n"
-            . '- Only use handler_config fields documented below - unknown fields are rejected' . "\n\n"
-            . $handler_docs;
+		return array(
+			'class'       => self::class,
+			'method'      => 'handle_tool_call',
+			'description' => $description,
+			'parameters'  => array(
+				'flow_step_id'        => array(
+					'type'        => 'string',
+					'required'    => false,
+					'description' => 'Single flow step ID (format: {pipeline_step_id}_{flow_id})',
+				),
+				'flow_step_ids'       => array(
+					'type'        => 'array',
+					'required'    => false,
+					'description' => 'Array of flow step IDs for batch updates on specific steps',
+				),
+				'pipeline_id'         => array(
+					'type'        => 'integer',
+					'required'    => false,
+					'description' => 'Pipeline scope. REQUIRES either handler_slug (filter) or all_flows=true',
+				),
+				'all_flows'           => array(
+					'type'        => 'boolean',
+					'required'    => false,
+					'description' => 'When true with pipeline_id, applies to ALL flows in pipeline. Explicit opt-in required for bulk operations.',
+				),
+				'step_type'           => array(
+					'type'        => 'string',
+					'required'    => false,
+					'description' => 'Filter by step type (fetch, publish, upsert, ai)',
+				),
+				'handler_slug'        => array(
+					'type'        => 'string',
+					'required'    => false,
+					'description' => 'Handler slug to set (single mode) OR filter by existing handler (bulk mode). Works with or without pipeline_id scope.',
+				),
+				'target_handler_slug' => array(
+					'type'        => 'string',
+					'required'    => false,
+					'description' => 'Handler to switch TO. When provided, handler_slug filters existing handlers (bulk) and target_handler_slug sets the new handler.',
+				),
+				'field_map'           => array(
+					'type'        => 'object',
+					'required'    => false,
+					'description' => 'Field mappings when switching handlers, e.g. {"endpoint_url": "source_url"}. Fields with matching names auto-map by default.',
+				),
+				'handler_config'      => array(
+					'type'        => 'object',
+					'required'    => false,
+					'description' => 'Handler-specific configuration to merge into existing config',
+				),
+				'flow_configs'        => array(
+					'type'        => 'array',
+					'required'    => false,
+					'description' => 'Per-flow configurations for bulk mode. Array of {flow_id: int, handler_config: object}. Merged with shared handler_config (per-flow takes precedence).',
+				),
+				'user_message'        => array(
+					'type'        => 'string',
+					'required'    => false,
+					'description' => 'User message/prompt for AI steps',
+				),
+				'updates'             => array(
+					'type'        => 'array',
+					'required'    => false,
+					'description' => 'Cross-pipeline mode: configure multiple flows with different settings. Each item: {flow_id, step_configs (keyed by step_type: {handler_slug?, handler_config?, user_message?})}',
+				),
+				'shared_config'       => array(
+					'type'        => 'object',
+					'required'    => false,
+					'description' => 'Shared step config for cross-pipeline mode (keyed by step_type). Per-flow step_configs override these.',
+				),
+				'validate_only'       => array(
+					'type'        => 'boolean',
+					'required'    => false,
+					'description' => 'Dry-run mode: validate configuration without executing. Returns what would be updated.',
+				),
+			),
+		);
+	}
 
-        return [
-            'class' => self::class,
-            'method' => 'handle_tool_call',
-            'description' => $description,
-            'parameters' => [
-                'flow_step_id' => [
-                    'type' => 'string',
-                    'required' => false,
-                    'description' => 'Flow step ID for single-step mode (format: {pipeline_step_id}_{flow_id})'
-                ],
-                'pipeline_id' => [
-                    'type' => 'integer',
-                    'required' => false,
-                    'description' => 'Pipeline ID for bulk mode - applies to all matching steps across all flows'
-                ],
-                'step_type' => [
-                    'type' => 'string',
-                    'required' => false,
-                    'description' => 'Filter by step type (fetch, publish, update, ai) - required for bulk mode unless handler_slug provided'
-                ],
-                'handler_slug' => [
-                    'type' => 'string',
-                    'required' => false,
-                    'description' => 'Handler slug to set (single mode) or filter by existing handler (bulk mode)'
-                ],
-                'target_handler_slug' => [
-                    'type' => 'string',
-                    'required' => false,
-                    'description' => 'Handler to switch TO. When provided, handler_slug filters existing handlers (bulk) and target_handler_slug sets the new handler.'
-                ],
-                'field_map' => [
-                    'type' => 'object',
-                    'required' => false,
-                    'description' => 'Field mappings when switching handlers, e.g. {"endpoint_url": "source_url"}. Fields with matching names auto-map by default.'
-                ],
-                'handler_config' => [
-                    'type' => 'object',
-                    'required' => false,
-                    'description' => 'Handler-specific configuration to merge into existing config'
-                ],
-                'flow_configs' => [
-                    'type' => 'array',
-                    'required' => false,
-                    'description' => 'Per-flow configurations for bulk mode. Array of {flow_id: int, handler_config: object}. Merged with shared handler_config (per-flow takes precedence).'
-                ],
-                'user_message' => [
-                    'type' => 'string',
-                    'required' => false,
-                    'description' => 'User message/prompt for AI steps'
-                ]
-            ]
-        ];
-    }
+	public function handle_tool_call( array $parameters, array $tool_def = array() ): array {
+		$flow_step_id        = $parameters['flow_step_id'] ?? null;
+		$flow_step_ids       = $parameters['flow_step_ids'] ?? array();
+		$pipeline_id         = isset( $parameters['pipeline_id'] ) ? (int) $parameters['pipeline_id'] : null;
+		$all_flows           = ! empty( $parameters['all_flows'] );
+		$step_type           = $parameters['step_type'] ?? null;
+		$handler_slug        = $parameters['handler_slug'] ?? null;
+		$target_handler_slug = $parameters['target_handler_slug'] ?? null;
+		$field_map           = $parameters['field_map'] ?? array();
+		$handler_config      = $parameters['handler_config'] ?? array();
+		$flow_configs        = $parameters['flow_configs'] ?? array();
+		$user_message        = $parameters['user_message'] ?? null;
+		$updates             = $parameters['updates'] ?? array();
+		$shared_config       = $parameters['shared_config'] ?? array();
+		$validate_only       = ! empty( $parameters['validate_only'] );
 
-    public function handle_tool_call(array $parameters, array $tool_def = []): array {
-        $flow_step_id = $parameters['flow_step_id'] ?? null;
-        $pipeline_id = isset($parameters['pipeline_id']) ? (int) $parameters['pipeline_id'] : null;
-        $step_type = $parameters['step_type'] ?? null;
-        $handler_slug = $parameters['handler_slug'] ?? null;
-        $target_handler_slug = $parameters['target_handler_slug'] ?? null;
-        $field_map = $parameters['field_map'] ?? [];
-        $handler_config = $parameters['handler_config'] ?? [];
-        $flow_configs = $parameters['flow_configs'] ?? [];
-        $user_message = $parameters['user_message'] ?? null;
+		// 1. Cross-pipeline mode: updates array provided
+		if ( ! empty( $updates ) && is_array( $updates ) ) {
+			return $this->handleCrossPipelineMode( $updates, $shared_config, $validate_only );
+		}
 
-        // Validation: One of flow_step_id OR pipeline_id required
-        if (empty($flow_step_id) && empty($pipeline_id)) {
-            return [
-                'success' => false,
-                'error' => 'Either flow_step_id (single mode) or pipeline_id (bulk mode) is required',
-                'tool_name' => 'configure_flow_steps'
-            ];
-        }
+		// 2. Specific flow_step_id(s) - always works
+		if ( ! empty( $flow_step_id ) ) {
+			return $this->handleSingleMode( $flow_step_id, $handler_slug, $target_handler_slug, $field_map, $handler_config, $user_message );
+		}
 
-        // Validation: target_handler_slug requires valid handler
-        if (!empty($target_handler_slug)) {
-            $handler_service = new HandlerService();
-            if (!$handler_service->exists($target_handler_slug)) {
-                return [
-                    'success' => false,
-                    'error' => "Target handler '{$target_handler_slug}' not found",
-                    'tool_name' => 'configure_flow_steps'
-                ];
-            }
-        }
+		if ( ! empty( $flow_step_ids ) && is_array( $flow_step_ids ) ) {
+			return $this->handleMultipleStepsMode( $flow_step_ids, $handler_slug, $target_handler_slug, $field_map, $handler_config, $user_message );
+		}
 
-        // Route to appropriate handler
-        if (!empty($flow_step_id)) {
-            return $this->handleSingleMode($flow_step_id, $handler_slug, $target_handler_slug, $field_map, $handler_config, $user_message);
-        }
+		// 3. Handler filter (with optional pipeline scope) - works globally or scoped
+		if ( ! empty( $handler_slug ) && empty( $target_handler_slug ) ) {
+			// handler_slug alone acts as a filter, requiring target_handler_slug or handler_config for changes
+			if ( empty( $handler_config ) && empty( $user_message ) ) {
+				return array(
+					'success'   => false,
+					'error'     => 'handler_slug provided as filter but no changes specified. Provide handler_config, user_message, or target_handler_slug.',
+					'tool_name' => 'configure_flow_steps',
+				);
+			}
+		}
 
-        return $this->handleBulkMode($pipeline_id, $step_type, $handler_slug, $target_handler_slug, $field_map, $handler_config, $flow_configs, $user_message);
-    }
+		// 4. Pipeline-scoped operations require explicit targeting
+		if ( ! empty( $pipeline_id ) ) {
+			// SAFETY: pipeline_id alone is forbidden - require explicit selection
+			$has_handler_filter = ! empty( $handler_slug );
+			$has_explicit_all   = $all_flows;
 
-    /**
-     * Handle single flow step configuration.
-     */
-    private function handleSingleMode(
-        string $flow_step_id,
-        ?string $handler_slug,
-        ?string $target_handler_slug,
-        array $field_map,
-        array $handler_config,
-        ?string $user_message
-    ): array {
-        $flow_step_manager = new FlowStepManager();
-        $results = [];
+			if ( ! $has_handler_filter && ! $has_explicit_all ) {
+				return array(
+					'success'     => false,
+					'error'       => 'pipeline_id requires explicit targeting to prevent accidental bulk updates',
+					'error_type'  => 'safety_guard',
+					'tool_name'   => 'configure_flow_steps',
+					'remediation' => array(
+						'options' => array(
+							'Filter by handler: add handler_slug to target only flows using that handler',
+							'Explicit bulk: add all_flows=true to confirm you want ALL flows in the pipeline',
+							'Specific steps: use flow_step_id or flow_step_ids instead of pipeline_id',
+						),
+						'example' => 'pipeline_id=18, handler_slug="dice_fm" OR pipeline_id=18, all_flows=true',
+					),
+				);
+			}
 
-        $has_handler_change = !empty($handler_slug) || !empty($target_handler_slug) || !empty($handler_config);
+			// Handle validate_only mode for bulk operations
+			if ( $validate_only ) {
+				return $this->handleValidateOnly( $pipeline_id, $step_type, $handler_slug, $target_handler_slug, $handler_config, $flow_configs );
+			}
 
-        if ($has_handler_change) {
-            // Get existing step config
-            $existing_step = $flow_step_manager->get($flow_step_id);
-            $existing_handler_slug = $existing_step['handler_slug'] ?? null;
-            $existing_handler_config = $existing_step['handler_config'] ?? [];
+			// Validation: target_handler_slug requires valid handler
+			if ( ! empty( $target_handler_slug ) ) {
+				$ability = wp_get_ability( 'datamachine/validate-handler' );
+				if ( ! $ability ) {
+					return array(
+						'success'   => false,
+						'error'     => 'Handler validation ability not available',
+						'tool_name' => 'configure_flow_steps',
+					);
+				}
+				$validation_result = $ability->execute( array( 'handler_slug' => $target_handler_slug ) );
+				if ( is_wp_error( $validation_result ) || ! ( $validation_result['valid'] ?? false ) ) {
+					return $this->buildErrorResponse( "Target handler '{$target_handler_slug}' not found", 'configure_flow_steps' );
+				}
+			}
 
-            // Determine effective handler slug
-            // Priority: target_handler_slug > handler_slug > existing
-            $effective_handler_slug = $target_handler_slug ?? $handler_slug ?? $existing_handler_slug;
+			return $this->handleBulkMode( $pipeline_id, $step_type, $handler_slug, $target_handler_slug, $field_map, $handler_config, $flow_configs, $user_message );
+		}
 
-            if (empty($effective_handler_slug)) {
-                return [
-                    'success' => false,
-                    'error' => 'handler_slug or target_handler_slug is required when configuring a step without an existing handler',
-                    'tool_name' => 'configure_flow_steps'
-                ];
-            }
+		// 5. Global handler filter (no pipeline_id) - target all flows using this handler
+		if ( ! empty( $handler_slug ) ) {
+			// Validation: target_handler_slug requires valid handler
+			if ( ! empty( $target_handler_slug ) ) {
+				$ability = wp_get_ability( 'datamachine/validate-handler' );
+				if ( ! $ability ) {
+					return array(
+						'success'   => false,
+						'error'     => 'Handler validation ability not available',
+						'tool_name' => 'configure_flow_steps',
+					);
+				}
+				$validation_result = $ability->execute( array( 'handler_slug' => $target_handler_slug ) );
+				if ( is_wp_error( $validation_result ) || ! ( $validation_result['valid'] ?? false ) ) {
+					return $this->buildErrorResponse( "Target handler '{$target_handler_slug}' not found", 'configure_flow_steps' );
+				}
+			}
 
-            // Check if we're switching handlers
-            $is_switching = !empty($target_handler_slug) && $target_handler_slug !== $existing_handler_slug;
+			return $this->handleGlobalHandlerMode( $handler_slug, $step_type, $target_handler_slug, $field_map, $handler_config, $user_message, $validate_only );
+		}
 
-            // Build merged config
-            if ($is_switching && !empty($existing_handler_config)) {
-                // Map existing config fields to new handler
-                $mapped_config = $this->mapHandlerConfig($existing_handler_config, $effective_handler_slug, $field_map);
-            } else {
-                $mapped_config = [];
-            }
+		// 6. No valid selection
+		return array(
+			'success'     => false,
+			'error'       => 'No target specified',
+			'error_type'  => 'missing_target',
+			'tool_name'   => 'configure_flow_steps',
+			'remediation' => array(
+				'options' => array(
+					'flow_step_id: single step by ID',
+					'flow_step_ids: array of specific step IDs',
+					'pipeline_id + handler_slug: filter by handler within pipeline',
+					'pipeline_id + all_flows=true: all flows in pipeline (explicit)',
+					'handler_slug: all flows using this handler globally',
+					'updates: cross-pipeline mode with per-flow settings',
+				),
+			),
+		);
+	}
 
-            // Merge: mapped config < shared handler_config (shared takes precedence)
-            $merged_config = array_merge($mapped_config, $handler_config);
+	/**
+	 * Handle single flow step configuration.
+	 */
+	private function handleSingleMode(
+		string $flow_step_id,
+		?string $handler_slug,
+		?string $target_handler_slug,
+		array $field_map,
+		array $handler_config,
+		?string $user_message
+	): array {
+		$ability = wp_get_ability( 'datamachine/update-flow-step' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Update flow step ability not available',
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
 
-            // Validate merged config against target handler schema
-            if (!empty($merged_config)) {
-                $validation_result = $this->validateHandlerConfig($effective_handler_slug, $merged_config);
-                if ($validation_result !== true) {
-                    return [
-                        'success' => false,
-                        'error' => $validation_result,
-                        'tool_name' => 'configure_flow_steps'
-                    ];
-                }
-            }
+		$effective_slug = $target_handler_slug ?? $handler_slug;
 
-            $handler_success = $flow_step_manager->updateHandler($flow_step_id, $effective_handler_slug, $merged_config);
-            if (!$handler_success) {
-                return [
-                    'success' => false,
-                    'error' => 'Failed to update handler. Verify flow_step_id is valid.',
-                    'tool_name' => 'configure_flow_steps'
-                ];
-            }
+		$input = array( 'flow_step_id' => $flow_step_id );
 
-            $results['handler_updated'] = true;
-            $results['handler_slug'] = $effective_handler_slug;
-            if ($is_switching) {
-                $results['switched_from'] = $existing_handler_slug;
-            }
-        }
+		if ( ! empty( $effective_slug ) ) {
+			$input['handler_slug'] = $effective_slug;
+		}
 
-        if (!empty($user_message)) {
-            $message_success = $flow_step_manager->updateUserMessage($flow_step_id, $user_message);
-            if (!$message_success) {
-                return [
-                    'success' => false,
-                    'error' => 'Failed to update user message. Verify flow_step_id is valid and belongs to an AI step.',
-                    'tool_name' => 'configure_flow_steps'
-                ];
-            }
-            $results['user_message_updated'] = true;
-        }
+		if ( ! empty( $handler_config ) ) {
+			$input['handler_config'] = $handler_config;
+		}
 
-        return [
-            'success' => true,
-            'data' => array_merge([
-                'flow_step_id' => $flow_step_id,
-                'message' => 'Flow step configured successfully.'
-            ], $results),
-            'tool_name' => 'configure_flow_steps'
-        ];
-    }
+		if ( ! empty( $user_message ) ) {
+			$input['user_message'] = $user_message;
+		}
 
-    /**
-     * Handle bulk pipeline-scoped configuration.
-     */
-    private function handleBulkMode(
-        int $pipeline_id,
-        ?string $step_type,
-        ?string $handler_slug,
-        ?string $target_handler_slug,
-        array $field_map,
-        array $handler_config,
-        array $flow_configs,
-        ?string $user_message
-    ): array {
-        $flows_db = new FlowsDB();
-        $flow_step_manager = new FlowStepManager();
+		$result = $ability->execute( $input );
 
-        // Get all flows for this pipeline
-        $flows = $flows_db->get_flows_for_pipeline($pipeline_id);
-        if (empty($flows)) {
-            return [
-                'success' => false,
-                'error' => 'No flows found for pipeline_id ' . $pipeline_id,
-                'tool_name' => 'configure_flow_steps'
-            ];
-        }
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
 
-        // Index flow_configs by flow_id for O(1) lookup
-        $flow_configs_by_id = [];
-        foreach ($flow_configs as $fc) {
-            if (isset($fc['flow_id'])) {
-                $flow_configs_by_id[(int) $fc['flow_id']] = $fc['handler_config'] ?? [];
-            }
-        }
+		$result['tool_name'] = 'configure_flow_steps';
 
-        // Track which flow_ids from flow_configs were actually found
-        $found_flow_ids = [];
-        $pipeline_flow_ids = array_column($flows, 'flow_id');
+		if ( $result['success'] ) {
+			$result['data'] = array(
+				'flow_step_id' => $flow_step_id,
+				'message'      => $result['message'] ?? 'Flow step configured successfully.',
+			);
+			if ( ! empty( $effective_slug ) ) {
+				$result['data']['handler_slug']    = $effective_slug;
+				$result['data']['handler_updated'] = true;
+			}
+			if ( ! empty( $user_message ) ) {
+				$result['data']['user_message_updated'] = true;
+			}
+			unset( $result['message'] );
+		}
 
-        $updated_details = [];
-        $errors = [];
-        $skipped = [];
+		return $result;
+	}
 
-        foreach ($flows as $flow) {
-            $flow_id = (int) $flow['flow_id'];
-            $flow_name = $flow['flow_name'] ?? __('Unnamed Flow', 'data-machine');
-            $flow_config = $flow['flow_config'] ?? [];
+	/**
+	 * Handle multiple specific flow steps by ID array.
+	 *
+	 * @param array   $flow_step_ids Array of flow step IDs.
+	 * @param ?string $handler_slug Handler slug to set.
+	 * @param ?string $target_handler_slug Handler to switch to.
+	 * @param array   $field_map Field mappings for handler switching.
+	 * @param array   $handler_config Handler configuration.
+	 * @param ?string $user_message User message for AI steps.
+	 * @return array Tool response.
+	 */
+	private function handleMultipleStepsMode(
+		array $flow_step_ids,
+		?string $handler_slug,
+		?string $target_handler_slug,
+		array $field_map,
+		array $handler_config,
+		?string $user_message
+	): array {
+		if ( empty( $flow_step_ids ) ) {
+			return array(
+				'success'   => false,
+				'error'     => 'flow_step_ids array is empty',
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
 
-            foreach ($flow_config as $flow_step_id => $step_config) {
-                // Filter by step_type if provided
-                if (!empty($step_type)) {
-                    $config_step_type = $step_config['step_type'] ?? null;
-                    if ($config_step_type !== $step_type) {
-                        continue;
-                    }
-                }
+		$results = array();
+		$errors  = array();
 
-                // Filter by handler_slug if provided (filters by existing handler)
-                if (!empty($handler_slug)) {
-                    $config_handler_slug = $step_config['handler_slug'] ?? null;
-                    if ($config_handler_slug !== $handler_slug) {
-                        continue;
-                    }
-                }
+		foreach ( $flow_step_ids as $step_id ) {
+			if ( ! is_string( $step_id ) || empty( $step_id ) ) {
+				$errors[] = array(
+					'flow_step_id' => $step_id,
+					'error'        => 'Invalid flow_step_id format',
+				);
+				continue;
+			}
 
-                $existing_handler_slug = $step_config['handler_slug'] ?? null;
-                $existing_handler_config = $step_config['handler_config'] ?? [];
+			$result = $this->handleSingleMode( $step_id, $handler_slug, $target_handler_slug, $field_map, $handler_config, $user_message );
 
-                // Determine effective handler (target_handler_slug takes precedence)
-                $effective_handler_slug = $target_handler_slug ?? $existing_handler_slug;
+			if ( $result['success'] ?? false ) {
+				$results[] = array(
+					'flow_step_id' => $step_id,
+					'success'      => true,
+				);
+			} else {
+				$errors[] = array(
+					'flow_step_id' => $step_id,
+					'error'        => $result['error'] ?? 'Unknown error',
+				);
+			}
+		}
 
-                if (empty($effective_handler_slug)) {
-                    $errors[] = [
-                        'flow_step_id' => $flow_step_id,
-                        'flow_id' => $flow_id,
-                        'error' => 'Step has no handler_slug configured and no target_handler_slug provided'
-                    ];
-                    continue;
-                }
+		$success_count = count( $results );
+		$error_count   = count( $errors );
 
-                // Check if we're switching handlers
-                $is_switching = !empty($target_handler_slug) && $target_handler_slug !== $existing_handler_slug;
+		if ( 0 === $success_count ) {
+			return array(
+				'success'   => false,
+				'error'     => "All {$error_count} step(s) failed to update",
+				'errors'    => $errors,
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
 
-                // Build merged config
-                // 1. Start with mapped existing config (if switching handlers)
-                if ($is_switching && !empty($existing_handler_config)) {
-                    $mapped_config = $this->mapHandlerConfig($existing_handler_config, $effective_handler_slug, $field_map);
-                } else {
-                    $mapped_config = [];
-                }
+		$response = array(
+			'success'   => true,
+			'tool_name' => 'configure_flow_steps',
+			'data'      => array(
+				'steps_modified' => $success_count,
+				'updated_steps'  => $results,
+				'message'        => sprintf( 'Updated %d step(s).', $success_count ),
+			),
+		);
 
-                // 2. Merge shared handler_config on top
-                $merged_config = array_merge($mapped_config, $handler_config);
+		if ( ! empty( $errors ) ) {
+			$response['data']['errors']   = $errors;
+			$response['data']['message'] .= sprintf( ' %d error(s).', $error_count );
+		}
 
-                // 3. Merge per-flow config on top (highest priority)
-                if (isset($flow_configs_by_id[$flow_id])) {
-                    $found_flow_ids[] = $flow_id;
-                    $merged_config = array_merge($merged_config, $flow_configs_by_id[$flow_id]);
-                }
+		return $response;
+	}
 
-                // Skip if nothing to update
-                if (empty($merged_config) && empty($user_message) && !$is_switching) {
-                    continue;
-                }
+	/**
+	 * Handle global handler mode - configure all flows using a specific handler across ALL pipelines.
+	 *
+	 * @param string  $handler_slug Handler slug to filter by.
+	 * @param ?string $step_type Optional step type filter.
+	 * @param ?string $target_handler_slug Handler to switch to.
+	 * @param array   $field_map Field mappings for handler switching.
+	 * @param array   $handler_config Handler configuration to apply.
+	 * @param ?string $user_message User message for AI steps.
+	 * @param bool    $validate_only Whether to validate without executing.
+	 * @return array Tool response.
+	 */
+	private function handleGlobalHandlerMode(
+		string $handler_slug,
+		?string $step_type,
+		?string $target_handler_slug,
+		array $field_map,
+		array $handler_config,
+		?string $user_message,
+		bool $validate_only
+	): array {
+		$ability = wp_get_ability( 'datamachine/configure-flow-steps' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Configure flow steps ability not available',
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
 
-                // Validate merged config against target handler schema
-                if (!empty($merged_config)) {
-                    $validation_result = $this->validateHandlerConfig($effective_handler_slug, $merged_config);
-                    if ($validation_result !== true) {
-                        $errors[] = [
-                            'flow_step_id' => $flow_step_id,
-                            'flow_id' => $flow_id,
-                            'error' => $validation_result
-                        ];
-                        continue;
-                    }
-                }
+		$input = array(
+			'handler_slug'  => $handler_slug,
+			'global_scope'  => true,
+			'validate_only' => $validate_only,
+		);
 
-                // Apply handler update
-                $success = $flow_step_manager->updateHandler($flow_step_id, $effective_handler_slug, $merged_config);
-                if (!$success) {
-                    $errors[] = [
-                        'flow_step_id' => $flow_step_id,
-                        'flow_id' => $flow_id,
-                        'error' => 'Failed to update handler'
-                    ];
-                    continue;
-                }
+		if ( ! empty( $step_type ) ) {
+			$input['step_type'] = $step_type;
+		}
 
-                // Apply user_message update
-                if (!empty($user_message)) {
-                    $message_success = $flow_step_manager->updateUserMessage($flow_step_id, $user_message);
-                    if (!$message_success) {
-                        $errors[] = [
-                            'flow_step_id' => $flow_step_id,
-                            'flow_id' => $flow_id,
-                            'error' => 'Failed to update user message'
-                        ];
-                        continue;
-                    }
-                }
+		if ( ! empty( $target_handler_slug ) ) {
+			$input['target_handler_slug'] = $target_handler_slug;
+		}
 
-                $detail = [
-                    'flow_id' => $flow_id,
-                    'flow_name' => $flow_name,
-                    'flow_step_id' => $flow_step_id,
-                    'handler_slug' => $effective_handler_slug
-                ];
-                if ($is_switching) {
-                    $detail['switched_from'] = $existing_handler_slug;
-                }
-                $updated_details[] = $detail;
-            }
-        }
+		if ( ! empty( $field_map ) ) {
+			$input['field_map'] = $field_map;
+		}
 
-        // Check for flow_ids in flow_configs that weren't found in pipeline
-        foreach (array_keys($flow_configs_by_id) as $requested_flow_id) {
-            if (!in_array($requested_flow_id, $pipeline_flow_ids, true)) {
-                $skipped[] = [
-                    'flow_id' => $requested_flow_id,
-                    'error' => 'Flow not found in pipeline'
-                ];
-            }
-        }
+		if ( ! empty( $handler_config ) ) {
+			$input['handler_config'] = $handler_config;
+		}
 
-        $flows_updated = count(array_unique(array_column($updated_details, 'flow_id')));
-        $steps_modified = count($updated_details);
+		if ( ! empty( $user_message ) ) {
+			$input['user_message'] = $user_message;
+		}
 
-        if ($steps_modified === 0 && !empty($errors)) {
-            return [
-                'success' => false,
-                'error' => 'No steps were updated. ' . count($errors) . ' error(s) occurred.',
-                'errors' => $errors,
-                'skipped' => $skipped,
-                'tool_name' => 'configure_flow_steps'
-            ];
-        }
+		$result = $ability->execute( $input );
 
-        if ($steps_modified === 0) {
-            return [
-                'success' => false,
-                'error' => 'No matching steps found for the specified criteria',
-                'skipped' => $skipped,
-                'tool_name' => 'configure_flow_steps'
-            ];
-        }
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
 
-        $message = sprintf('Updated %d step(s) across %d flow(s).', $steps_modified, $flows_updated);
-        if (!empty($skipped)) {
-            $message .= sprintf(' %d flow_id(s) skipped.', count($skipped));
-        }
+		$result['tool_name'] = 'configure_flow_steps';
 
-        $response = [
-            'success' => true,
-            'data' => [
-                'pipeline_id' => $pipeline_id,
-                'flows_updated' => $flows_updated,
-                'steps_modified' => $steps_modified,
-                'details' => $updated_details,
-                'message' => $message
-            ],
-            'tool_name' => 'configure_flow_steps'
-        ];
+		if ( $result['success'] ?? false ) {
+			if ( $validate_only ) {
+				$result['data'] = array(
+					'mode'         => 'validate_only',
+					'handler_slug' => $handler_slug,
+					'global_scope' => true,
+					'would_update' => $result['would_update'] ?? array(),
+					'message'      => $result['message'] ?? 'Validation passed.',
+				);
+				unset( $result['would_update'], $result['valid'], $result['mode'] );
+			} else {
+				$result['data'] = array(
+					'handler_slug'   => $handler_slug,
+					'global_scope'   => true,
+					'flows_updated'  => $result['flows_updated'] ?? 0,
+					'steps_modified' => $result['steps_modified'] ?? 0,
+					'details'        => $result['updated_steps'] ?? array(),
+					'message'        => $result['message'] ?? 'Global handler configuration completed.',
+				);
 
-        if (!empty($errors)) {
-            $response['data']['errors'] = $errors;
-        }
+				if ( ! empty( $result['errors'] ) ) {
+					$result['data']['errors'] = $result['errors'];
+				}
 
-        if (!empty($skipped)) {
-            $response['data']['skipped'] = $skipped;
-        }
+				unset( $result['flows_updated'], $result['steps_modified'], $result['updated_steps'], $result['errors'], $result['mode'] );
+			}
+		}
 
-        return $response;
-    }
+		return $result;
+	}
 
-    /**
-     * Validate handler_config fields against handler schema.
-     *
-     * @param string $handler_slug Handler slug
-     * @param array $handler_config Configuration to validate
-     * @return true|string True if valid, error message if invalid
-     */
-    private function validateHandlerConfig(string $handler_slug, array $handler_config): bool|string {
-        $handler_service = new HandlerService();
-        $valid_fields = array_keys($handler_service->getConfigFields($handler_slug));
+	/**
+	 * Handle bulk pipeline-scoped configuration.
+	 */
+	private function handleBulkMode(
+		int $pipeline_id,
+		?string $step_type,
+		?string $handler_slug,
+		?string $target_handler_slug,
+		array $field_map,
+		array $handler_config,
+		array $flow_configs,
+		?string $user_message
+	): array {
+		$ability = wp_get_ability( 'datamachine/configure-flow-steps' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Configure flow steps ability not available',
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
 
-        if (empty($valid_fields)) {
-            // No settings class = no validation possible, allow through
-            return true;
-        }
+		$input = array( 'pipeline_id' => $pipeline_id );
 
-        $unknown_fields = array_diff(array_keys($handler_config), $valid_fields);
+		if ( ! empty( $step_type ) ) {
+			$input['step_type'] = $step_type;
+		}
 
-        if (!empty($unknown_fields)) {
-            return sprintf(
-                'Unknown handler_config fields for %s: %s. Valid fields: %s',
-                $handler_slug,
-                implode(', ', $unknown_fields),
-                implode(', ', $valid_fields)
-            );
-        }
+		if ( ! empty( $handler_slug ) ) {
+			$input['handler_slug'] = $handler_slug;
+		}
 
-        return true;
-    }
+		if ( ! empty( $target_handler_slug ) ) {
+			$input['target_handler_slug'] = $target_handler_slug;
+		}
 
-    /**
-     * Map handler config fields when switching handlers.
-     *
-     * Fields are mapped in this order:
-     * 1. Explicit mapping via field_map parameter
-     * 2. Auto-map fields with matching names in target handler
-     * 3. Drop fields that don't exist in target handler
-     *
-     * @param array $existing_config Current handler_config
-     * @param string $target_handler Target handler slug
-     * @param array $explicit_map Explicit field mappings (old_field => new_field)
-     * @return array Mapped config with only valid target handler fields
-     */
-    private function mapHandlerConfig(array $existing_config, string $target_handler, array $explicit_map): array {
-        $handler_service = new HandlerService();
-        $target_fields = array_keys($handler_service->getConfigFields($target_handler));
+		if ( ! empty( $field_map ) ) {
+			$input['field_map'] = $field_map;
+		}
 
-        if (empty($target_fields)) {
-            return [];
-        }
+		if ( ! empty( $handler_config ) ) {
+			$input['handler_config'] = $handler_config;
+		}
 
-        $mapped_config = [];
+		if ( ! empty( $flow_configs ) ) {
+			$input['flow_configs'] = $flow_configs;
+		}
 
-        foreach ($existing_config as $field => $value) {
-            // Check for explicit mapping first
-            if (isset($explicit_map[$field])) {
-                $mapped_field = $explicit_map[$field];
-                if (in_array($mapped_field, $target_fields, true)) {
-                    $mapped_config[$mapped_field] = $value;
-                }
-                continue;
-            }
+		if ( ! empty( $user_message ) ) {
+			$input['user_message'] = $user_message;
+		}
 
-            // Auto-map if same field name exists in target handler
-            if (in_array($field, $target_fields, true)) {
-                $mapped_config[$field] = $value;
-            }
-            // Otherwise drop the field (not valid in target handler)
-        }
+		$result = $ability->execute( $input );
 
-        return $mapped_config;
-    }
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
+
+		$result['tool_name'] = 'configure_flow_steps';
+
+		if ( $result['success'] ) {
+			$result['data'] = array(
+				'pipeline_id'    => $result['pipeline_id'],
+				'flows_updated'  => $result['flows_updated'],
+				'steps_modified' => $result['steps_modified'],
+				'details'        => $result['updated_steps'] ?? array(),
+				'message'        => $result['message'],
+			);
+
+			if ( ! empty( $result['errors'] ) ) {
+				$result['data']['errors'] = $result['errors'];
+			}
+
+			if ( ! empty( $result['skipped'] ) ) {
+				$result['data']['skipped'] = $result['skipped'];
+			}
+
+			unset( $result['pipeline_id'], $result['flows_updated'], $result['steps_modified'], $result['updated_steps'], $result['message'], $result['errors'], $result['skipped'] );
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Handle validate_only mode - dry-run validation without execution.
+	 */
+	private function handleValidateOnly(
+		int $pipeline_id,
+		?string $step_type,
+		?string $handler_slug,
+		?string $target_handler_slug,
+		array $handler_config,
+		array $flow_configs
+	): array {
+		$ability = wp_get_ability( 'datamachine/validate-flow-steps-config' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Validate flow steps config ability not available',
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
+
+		$input = array( 'pipeline_id' => $pipeline_id );
+
+		if ( ! empty( $step_type ) ) {
+			$input['step_type'] = $step_type;
+		}
+
+		if ( ! empty( $handler_slug ) ) {
+			$input['handler_slug'] = $handler_slug;
+		}
+
+		if ( ! empty( $target_handler_slug ) ) {
+			$input['target_handler_slug'] = $target_handler_slug;
+		}
+
+		if ( ! empty( $handler_config ) ) {
+			$input['handler_config'] = $handler_config;
+		}
+
+		if ( ! empty( $flow_configs ) ) {
+			$input['flow_configs'] = $flow_configs;
+		}
+
+		$result              = $ability->execute( $input );
+		$result['tool_name'] = 'configure_flow_steps';
+		$result['mode']      = 'validate_only';
+
+		return $result;
+	}
+
+	/**
+	 * Handle cross-pipeline mode - configure multiple flows across different pipelines.
+	 *
+	 * @param array $updates Array of {flow_id, step_configs} objects.
+	 * @param array $shared_config Shared step config applied before per-flow overrides.
+	 * @param bool  $validate_only Whether to validate without executing.
+	 * @return array Tool response.
+	 */
+	private function handleCrossPipelineMode( array $updates, array $shared_config, bool $validate_only ): array {
+		$ability = wp_get_ability( 'datamachine/configure-flow-steps' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Configure flow steps ability not available',
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
+
+		$result = $ability->execute(
+			array(
+				'updates'       => $updates,
+				'shared_config' => $shared_config,
+				'validate_only' => $validate_only,
+			)
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'configure_flow_steps',
+			);
+		}
+
+		$result['tool_name'] = 'configure_flow_steps';
+
+		if ( $result['success'] ?? false ) {
+			if ( $validate_only ) {
+				$result['data'] = array(
+					'mode'         => 'validate_only',
+					'would_update' => $result['would_update'] ?? array(),
+					'message'      => $result['message'] ?? 'Validation passed.',
+				);
+				unset( $result['would_update'], $result['valid'], $result['mode'] );
+			} else {
+				$result['data'] = array(
+					'flows_updated'  => $result['flows_updated'],
+					'steps_modified' => $result['steps_modified'],
+					'details'        => $result['updated_steps'] ?? array(),
+					'errors'         => $result['errors'] ?? array(),
+					'message'        => $result['message'] ?? 'Cross-pipeline configuration completed.',
+					'mode'           => 'cross_pipeline',
+				);
+				unset( $result['flows_updated'], $result['steps_modified'], $result['updated_steps'], $result['errors'], $result['mode'] );
+			}
+		}
+
+		return $result;
+	}
 }

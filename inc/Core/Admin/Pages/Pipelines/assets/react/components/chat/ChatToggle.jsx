@@ -5,9 +5,15 @@
  * Displayed in the Pipelines page header.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { Button } from '@wordpress/components';
 import { comment } from '@wordpress/icons';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import { useUIStore } from '../../stores/uiStore';
 
 export default function ChatToggle() {
@@ -17,8 +23,14 @@ export default function ChatToggle() {
 		<Button
 			icon={ comment }
 			onClick={ toggleChat }
-			label={ isChatOpen ? __( 'Close chat', 'data-machine' ) : __( 'Open chat', 'data-machine' ) }
-			className={ `datamachine-chat-toggle ${ isChatOpen ? 'is-active' : '' }` }
+			label={
+				isChatOpen
+					? __( 'Close chat', 'data-machine' )
+					: __( 'Open chat', 'data-machine' )
+			}
+			className={ `datamachine-chat-toggle ${
+				isChatOpen ? 'is-active' : ''
+			}` }
 			isPressed={ isChatOpen }
 		/>
 	);

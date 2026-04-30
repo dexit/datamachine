@@ -38,7 +38,7 @@ All extracted data is normalized through a unified processor that handles:
 ## Extension Guide
 
 ### Adding a New Extractor
-To support a new platform, create a class implementing `ExtractorInterface` in `datamachine-events/inc/Steps/EventImport/Handlers/WebScraper/Extractors/`:
+To support a new platform, create a class implementing `ExtractorInterface` in the datamachine-events plugin under its Web Scraper extractors directory:
 
 ```php
 interface ExtractorInterface {

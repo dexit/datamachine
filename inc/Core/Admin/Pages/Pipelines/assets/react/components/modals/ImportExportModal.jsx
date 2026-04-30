@@ -4,27 +4,37 @@
  * Two-tab modal for exporting pipelines to CSV and importing from CSV.
  */
 
-import { useState } from '@wordpress/element';
+/**
+ * WordPress dependencies
+ */
 import { Modal, TabPanel } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import ExportTab from './import-export/ExportTab';
 import ImportTab from './import-export/ImportTab';
+import { usePipelines } from '../../queries/pipelines';
 
 /**
  * Import/Export Modal Component
  *
- * @param {Object} props - Component props
- * @param {Function} props.onClose - Close handler
- * @param {Array} props.pipelines - All available pipelines
+ * Fetches the shared lightweight pipelines list (no flows embedded, flow_count
+ * exposed per row) so the Export tab shows the same set the admin page sees.
+ *
+ * @param {Object}   props           - Component props
+ * @param {Function} props.onClose   - Close handler
+ * @param {Array}    [props.pipelines] - Optional preloaded pipelines (falls back to the list query)
  * @param {Function} props.onSuccess - Success callback
- * @returns {React.ReactElement|null} Import/export modal
+ * @return {React.ReactElement|null} Import/export modal
  */
 export default function ImportExportModal( {
 	onClose,
-	pipelines = [],
+	pipelines: pipelinesProp,
 	onSuccess,
 } ) {
-
+	const { data: queriedPipelines = [] } = usePipelines();
+	const pipelines = pipelinesProp ?? queriedPipelines;
 
 	/**
 	 * Tab configuration
@@ -32,12 +42,12 @@ export default function ImportExportModal( {
 	const tabs = [
 		{
 			name: 'export',
-			title: __( 'Export', 'datamachine' ),
+			title: __( 'Export', 'data-machine' ),
 			className: 'datamachine-import-export-tab',
 		},
 		{
 			name: 'import',
-			title: __( 'Import', 'datamachine' ),
+			title: __( 'Import', 'data-machine' ),
 			className: 'datamachine-import-export-tab',
 		},
 	];
@@ -54,7 +64,7 @@ export default function ImportExportModal( {
 
 	return (
 		<Modal
-			title={ __( 'Import / Export Pipelines', 'datamachine' ) }
+			title={ __( 'Import / Export Pipelines', 'data-machine' ) }
 			onRequestClose={ onClose }
 			className="datamachine-import-export-modal"
 		>

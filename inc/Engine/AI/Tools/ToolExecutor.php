@@ -6,125 +6,226 @@
  * Handles tool discovery, validation, execution, and parameter building.
  *
  * @package DataMachine\Engine\AI\Tools
- * @since 0.2.0
+ * @since   0.2.0
  */
 
 namespace DataMachine\Engine\AI\Tools;
 
-defined('ABSPATH') || exit;
+use DataMachine\Core\WordPress\PostTracking;
+use DataMachine\Engine\AI\Actions\ActionPolicyResolver;
+use DataMachine\Engine\AI\Actions\PendingActionHelper;
+use DataMachine\Engine\AI\Tools\Execution\ToolExecutionCore;
+
+defined( 'ABSPATH' ) || exit;
 
 class ToolExecutor {
 
-    /**
-     * Get available tools for AI agent execution.
-     * Used by both chat and pipeline agents.
-     *
-     * @param array|null $previous_step_config Previous step configuration (pipeline only)
-     * @param array|null $next_step_config Next step configuration (pipeline only)
-     * @param string|null $current_pipeline_step_id Current pipeline step ID (pipeline only)
-     * @param array $engine_data Engine data snapshot for dynamic tool generation
-     * @return array Available tools array
-     */
-    public static function getAvailableTools(?array $previous_step_config = null, ?array $next_step_config = null, ?string $current_pipeline_step_id = null, array $engine_data = []): array {
-        $available_tools = [];
 
-        if ($previous_step_config) {
-            $prev_handler_slug = $previous_step_config['handler_slug'] ?? null;
-            $prev_handler_config = $previous_step_config['handler_config'] ?? [];
+	/**
+	 * Execute tool with parameter merging and comprehensive error handling.
+	 * Builds complete parameters by combining AI parameters with step payload.
+	 *
+	 * Before invoking the tool handler, consults ActionPolicyResolver to
+	 * decide whether the invocation should execute directly, be staged for
+	 * user approval (preview), or be refused (forbidden). Tools opt into
+	 * preview/forbidden via metadata; unopted tools resolve to 'direct' and
+	 * behave identically to pre-ActionPolicy releases.
+	 *
+	 * The `$mode` / `$agent_id` / `$client_context` parameters were added in
+	 * 0.72.0 so the resolver has enough context to apply per-agent and
+	 * per-mode policy. Callers that pre-date the feature (pipeline code that
+	 * goes through `getAvailableTools()`) continue to work — mode defaults
+	 * to MODE_CHAT which matches the historical assumption, and missing
+	 * agent_id simply skips per-agent policy.
+	 *
+	 * @param  string $tool_name       Tool name to execute.
+	 * @param  array  $tool_parameters Parameters from AI.
+	 * @param  array  $available_tools Available tools array.
+	 * @param  array  $payload         Step payload (job_id, flow_step_id, data, flow_step_config).
+	 * @param  string $mode            Agent mode (chat/pipeline/system). Default: chat.
+	 * @param  int    $agent_id        Acting agent ID (0 = no per-agent policy).
+	 * @param  array  $client_context  Optional client-supplied context.
+	 * @return array Tool execution result.
+	 */
+	public static function executeTool(
+		string $tool_name,
+		array $tool_parameters,
+		array $available_tools,
+		array $payload,
+		string $mode = ActionPolicyResolver::MODE_CHAT,
+		int $agent_id = 0,
+		array $client_context = array()
+	): array {
+		$core     = new ToolExecutionCore();
+		$prepared = $core->prepareToolCall( $tool_name, $tool_parameters, $available_tools, $payload );
+		if ( empty( $prepared['ready'] ) ) {
+			unset( $prepared['ready'] );
+			return $prepared;
+		}
 
-            if ($prev_handler_slug) {
-                $prev_tools = apply_filters('chubes_ai_tools', [], $prev_handler_slug, $prev_handler_config, $engine_data);
-                $allowed_prev_tools = self::getAllowedTools($prev_tools, $prev_handler_slug, $current_pipeline_step_id);
-                $available_tools = array_merge($available_tools, $allowed_prev_tools);
-            }
-        }
+		$tool_def            = $prepared['tool_def'];
+		$complete_parameters = $prepared['parameters'];
 
-        if ($next_step_config) {
-            $next_handler_slug = $next_step_config['handler_slug'] ?? null;
-            $next_handler_config = $next_step_config['handler_config'] ?? [];
+		// Resolve the action policy for this invocation. Tools without
+		// action_policy metadata resolve to 'direct' and behave exactly
+		// as before this feature landed.
+		$resolver = new ActionPolicyResolver();
+		$policy   = $resolver->resolveForTool(
+			array(
+				'tool_name'      => $tool_name,
+				'tool_def'       => $tool_def,
+				'mode'           => $mode,
+				'agent_id'       => $agent_id,
+				'client_context' => $client_context,
+			)
+		);
 
-            if ($next_handler_slug) {
-                $next_tools = apply_filters('chubes_ai_tools', [], $next_handler_slug, $next_handler_config, $engine_data);
-                $allowed_next_tools = self::getAllowedTools($next_tools, $next_handler_slug, $current_pipeline_step_id);
-                $available_tools = array_merge($available_tools, $allowed_next_tools);
-            }
-        }
+		if ( ActionPolicyResolver::POLICY_FORBIDDEN === $policy ) {
+			return array(
+				'success'        => false,
+				'error'          => sprintf( 'Tool "%s" is not permitted in the current context (action_policy=forbidden).', $tool_name ),
+				'tool_name'      => $tool_name,
+				'action_policy'  => $policy,
+			);
+		}
 
-        // Load global tools (available to all AI agents)
-        $global_tools = apply_filters('datamachine_global_tools', []);
-        $allowed_global_tools = self::getAllowedTools($global_tools, null, $current_pipeline_step_id);
-        $available_tools = array_merge($available_tools, $allowed_global_tools);
+		if ( ActionPolicyResolver::POLICY_PREVIEW === $policy ) {
+			// Tool must declare how to build an action kind and summary.
+			// If it hasn't opted into the preview pipeline properly, fall
+			// back to 'direct' and log a warning — preview is a contract,
+			// not something we can synthesize for tools that don't cooperate.
+			if ( empty( $tool_def['action_kind'] ) ) {
+				do_action(
+					'datamachine_log',
+					'warning',
+					'ActionPolicy: tool resolved to preview but is missing action_kind metadata; falling back to direct.',
+					array(
+						'tool_name' => $tool_name,
+						'mode'      => $mode,
+						'agent_id'  => $agent_id,
+					)
+				);
+			} else {
+				$staged = PendingActionHelper::stage(
+					array(
+						'kind'         => (string) $tool_def['action_kind'],
+						'summary'      => self::buildActionSummary( $tool_name, $complete_parameters, $tool_def ),
+						'apply_input'  => $complete_parameters,
+						'preview_data' => self::buildActionPreviewData( $complete_parameters, $tool_def ),
+						'agent_id'     => $agent_id,
+						'context'      => array_filter(
+							array(
+								'mode'           => $mode,
+								'tool_name'      => $tool_name,
+								'job_id'         => $payload['job_id'] ?? null,
+								'session_id'     => $client_context['session_id'] ?? null,
+								'bridge_app'     => $client_context['bridge_app'] ?? null,
+							),
+							fn( $v ) => null !== $v && '' !== $v
+						),
+					)
+				);
 
-        return array_unique($available_tools, SORT_REGULAR);
-    }
+				return array_merge(
+					array(
+						'success'       => true,
+						'tool_name'     => $tool_name,
+						'action_policy' => $policy,
+					),
+					$staged
+				);
+			}
+		}
 
-    /**
-     * Get allowed tools based on enablement and configuration.
-     *
-     * @param array $all_tools All available tools
-     * @param string|null $handler_slug Handler slug for filtering
-     * @param string|null $pipeline_step_id Pipeline step ID (pipeline only, null for chat)
-     * @return array Filtered allowed tools
-     */
-    private static function getAllowedTools(array $all_tools, ?string $handler_slug, ?string $pipeline_step_id = null): array {
-        $allowed_tools = [];
-        $tool_manager = new ToolManager();
+		// Policy is 'direct' (or 'preview' fell back) — execute the tool normally.
+		$tool_result = $core->executePreparedTool( $tool_name, $complete_parameters, $tool_def );
 
-        foreach ($all_tools as $tool_name => $tool_config) {
-            if (isset($tool_config['handler'])) {
-                if ($tool_config['handler'] === $handler_slug) {
-                    $allowed_tools[$tool_name] = $tool_config;
-                }
-                continue;
-            }
+		// Automatic post origin tracking — applies to every tool whose result
+		// contains an extractable post_id. This covers both handler tools
+		// (Publish/Update base classes) and ability tools that create or
+		// modify posts (PublishWordPressAbility, InsertContentAbility, wiki
+		// create/update, third-party abilities, etc.). update_post_meta() is
+		// idempotent, so callers that already stamped tracking themselves
+		// (e.g. legacy handler base classes before this was centralized) are
+		// safe to run through this path without double-writes.
+		if ( ! empty( $tool_result['success'] ) ) {
+			$post_id = PostTracking::extractPostId( $tool_result );
+			if ( $post_id > 0 ) {
+				$job_id = (int) ( $payload['job_id'] ?? 0 );
+				PostTracking::store( $post_id, $tool_def, $job_id );
+			}
+		}
 
-            // Direct ToolManager call replaces filter
-            if ($tool_manager->is_tool_available($tool_name, $pipeline_step_id)) {
-                $allowed_tools[$tool_name] = $tool_config;
-            }
-        }
+		return $tool_result;
+	}
 
-        return $allowed_tools;
-    }
+	/**
+	 * Build a one-line human summary for a staged invocation.
+	 *
+	 * Tools can customize via a `build_action_summary` callable in their
+	 * definition. Fallback: `"<Tool Name>: <first-required-param-value truncated>"`.
+	 *
+	 * @param string $tool_name   Tool name.
+	 * @param array  $parameters  Complete parameters (post parameter-merge).
+	 * @param array  $tool_def    Tool definition.
+	 * @return string
+	 */
+	private static function buildActionSummary( string $tool_name, array $parameters, array $tool_def ): string {
+		if ( ! empty( $tool_def['build_action_summary'] ) && is_callable( $tool_def['build_action_summary'] ) ) {
+			$custom = call_user_func( $tool_def['build_action_summary'], $parameters, $tool_def );
+			if ( is_string( $custom ) && '' !== trim( $custom ) ) {
+				return wp_strip_all_tags( trim( $custom ) );
+			}
+		}
 
-    /**
-     * Execute tool with parameter merging and comprehensive error handling.
-     * Builds complete parameters by combining AI parameters with step payload.
-     *
-     * @param string $tool_name Tool name to execute
-     * @param array $tool_parameters Parameters from AI
-     * @param array $available_tools Available tools array
-    * @param array $payload Step payload (job_id, flow_step_id, data, flow_step_config)
-     * @return array Tool execution result
-     */
-    public static function executeTool(string $tool_name, array $tool_parameters, array $available_tools, array $payload): array {
-        $tool_def = $available_tools[$tool_name] ?? null;
-        if (!$tool_def) {
-            return [
-                'success' => false,
-                'error' => "Tool '{$tool_name}' not found",
-                'tool_name' => $tool_name
-            ];
-        }
+		$label = ucwords( str_replace( '_', ' ', $tool_name ) );
 
-        $complete_parameters = ToolParameters::buildParameters(
-            $tool_parameters,
-            $payload,
-            $tool_def
-        );
+		// First non-empty scalar param, truncated.
+		foreach ( $tool_def['parameters'] ?? array() as $param_name => $param_config ) {
+			if ( ! isset( $parameters[ $param_name ] ) ) {
+				continue;
+			}
+			$value = $parameters[ $param_name ];
+			if ( is_string( $value ) && '' !== trim( $value ) ) {
+				$snippet = wp_trim_words( wp_strip_all_tags( $value ), 12, '…' );
+				return $label . ': ' . $snippet;
+			}
+		}
 
-        $class_name = $tool_def['class'];
-        if (!class_exists($class_name)) {
-            return [
-                'success' => false,
-                'error' => "Tool class '{$class_name}' not found",
-                'tool_name' => $tool_name
-            ];
-        }
+		return $label;
+	}
 
-        $tool_handler = new $class_name();
-        $tool_result = $tool_handler->handle_tool_call($complete_parameters, $tool_def);
+	/**
+	 * Build a preview payload for a staged invocation.
+	 *
+	 * Tools can customize via a `build_action_preview` callable. Fallback:
+	 * pass the complete parameters through (minus anything under the tool's
+	 * `action_preview_redact` allowlist). This keeps the UI informative for
+	 * opted-in tools without requiring every tool to implement its own
+	 * preview renderer.
+	 *
+	 * @param array $parameters Complete parameters.
+	 * @param array $tool_def   Tool definition.
+	 * @return array
+	 */
+	private static function buildActionPreviewData( array $parameters, array $tool_def ): array {
+		if ( ! empty( $tool_def['build_action_preview'] ) && is_callable( $tool_def['build_action_preview'] ) ) {
+			$custom = call_user_func( $tool_def['build_action_preview'], $parameters, $tool_def );
+			if ( is_array( $custom ) ) {
+				return $custom;
+			}
+		}
 
-        return $tool_result;
-    }
+		$redact = array();
+		if ( ! empty( $tool_def['action_preview_redact'] ) && is_array( $tool_def['action_preview_redact'] ) ) {
+			$redact = array_flip( array_map( 'strval', $tool_def['action_preview_redact'] ) );
+		}
+
+		if ( empty( $redact ) ) {
+			return $parameters;
+		}
+
+		return array_diff_key( $parameters, $redact );
+	}
+
 }

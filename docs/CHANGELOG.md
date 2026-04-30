@@ -2,8 +2,2101 @@
 
 All notable changes to Data Machine will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.102.3] - 2026-04-29
+
+### Changed
+- create agents api module boundary
+
+### Fixed
+- refresh BFB to 0.6.6
+
+## [0.102.2] - 2026-04-29
+
+### Fixed
+- refresh BFB to 0.6.5
+
+## [0.102.1] - 2026-04-29
+
+### Fixed
+- refresh BFB to 0.6.4
+
+## [0.102.0] - 2026-04-29
+
+### Added
+- expose system prompt artifact metadata
+- add pageable source aggregation primitive
+
+### Changed
+- split request assembly boundary
+- pass directive context through adapter
+- split generic tool policy filter
+- split runtime payload adapter context
+- split Data Machine tool policy adapters
+
+### Fixed
+- refresh BFB to 0.6.3
+- move package lifecycle CLI under agent
+- load full runtime in WordPress unit tests
+- load full runtime during PHPUnit
+- refresh broad unit suite expectations
+
+## [0.101.2] - 2026-04-29
+
+### Changed
+- define agents api hook names
+
+### Fixed
+- skip heavy bootstrap on frontend views
+
+## [0.101.1] - 2026-04-29
+
+### Changed
+- split runtime loop policy boundary
+
+### Fixed
+- update Block Format Bridge to v0.6.2
+
+## [0.101.0] - 2026-04-29
+
+### Added
+- add WordPress-shaped registry vocabulary
+
+### Fixed
+- update BFB ability category metadata
+
+## [0.100.0] - 2026-04-29
+
+### Added
+- add export-agent ability
+- add import-agent ability
+
+### Changed
+- rename message envelope vocabulary
+- rename memory store seam
+- split Data Machine tool registry source
+- rename agent conversation seam
+- add conversation runner request boundary
+
+## [0.99.0] - 2026-04-29
+
+### Added
+- support plugin-defined artifact extensions
+- materialize artifact directories
+
+### Changed
+- baseline runtime smoke analysis
+- narrow transcript store resolution
+- split execution core from Data Machine decorators
+- clarify agent memory store boundary
+- split registry materialization
+- split adjacent handler source from registry
+- move pipeline policy args out of resolver
+
+### Fixed
+- skip recurring schedule reconciliation during install
+- migrate legacy mode model settings
+- skip deferred migrations during install
+
+## [0.98.0] - 2026-04-28
+
+### Added
+- persist installed artifact tracking
+- add handler auth refs foundation
+- export agent bundles through value objects
+
+### Fixed
+- validate portable flow policy queues
+
+## [0.97.1] - 2026-04-28
+
+### Fixed
+- keep empty bundle list JSON parseable
+
+## [0.97.0] - 2026-04-28
+
+### Added
+- add agent bundle CLI
+- update portable pipelines in place
+
+## [0.96.0] - 2026-04-28
+
+### Added
+- add bundle-aware self-write policy
+- add upgrade planner pending actions
+- add prompt artifact auth ref contracts
+
+## [0.95.0] - 2026-04-28
+
+### Added
+- add agent bundle artifact foundations
+
+## [0.94.0] - 2026-04-28
+
+### Added
+- emit memory change events
+
+### Changed
+- cover content-format ability paths
+
+## [0.93.1] - 2026-04-28
+
+### Fixed
+- pin BFB release
+
+## [0.93.0] - 2026-04-28
+
+### Added
+- support workflow specs in bulk create
+
+## [0.92.0] - 2026-04-28
+
+### Added
+- make message envelopes canonical
+
+## [0.91.0] - 2026-04-28
+
+### Added
+- add guideline memory store
+
+## [0.90.0] - 2026-04-28
+
+### Added
+- support workflow specs in bulk create
+
+### Fixed
+- repair system run param synopsis
+- centralize spec validation
+
+## [0.89.0] - 2026-04-28
+
+### Added
+- add run task params guardrails
+- route bundle directories through value objects
+
+## [0.88.0] - 2026-04-28
+
+### Added
+- add agent bundle version drift metadata
+- add loop event sink contract
+- add runtime tool declaration validator
+- compose tools from source providers
+- execute ability-backed tools
+- define resumable run state vocabulary
+- support WordPress content formats
+- define message envelope contract
+- introduce agent_call primitive
+- bundle block format bridge substrate
+- encrypt OAuth tokens at rest in BaseAuthProvider
+- filter OAuth callback capability check
+
+### Changed
+- split conversation store contracts
+
+### Fixed
+- unify runtime step config resolution
+- default AI upserts to markdown authoring
+
+## [0.87.3] - 2026-04-28
+
+### Added
+- support payload propagation through OAuth state
+- expose pipeline tool policy writes
+- show AI tool policy summary
+
+### Changed
+- harden smoke source reads
+
+### Fixed
+- fix(daily-memory): skip cleanly when no AI model is configured
+- pass handler config to resolved tools
+- align agent_config writer with resolver schema
+- fix(import-export): preserve portable AI flow state
+- enforce snapshot pipeline tool policy
+- preserve required handler tools
+- restrict chat-only global tools
+- align prompt display and CLI step config
+
+## [0.87.2] - 2026-04-28
+
+### Fixed
+- restore variables consumed by fetchReport response
+
+## [0.87.1] - 2026-04-28
+
+### Fixed
+- declare remote_path for deploy resolver
+
+## [0.87.0] - 2026-04-28
+
+### Added
+- add per-agent directive policy
+
+### Fixed
+- apply page_filter to all GA4 actions
+
+## [0.86.0] - 2026-04-27
+
+### Added
+- install persistent workflows from scaffolds
+- inspect provider request shape
+- add request metadata guardrails
+
+### Changed
+- centralize flow step config overlays
+- centralize step config scaffolds
+- migrate legacy auth config once
+- share bundle slug accessor
+
+### Fixed
+- preserve registered verifier modes
+- centralize execution order planning
+
+## [0.85.0] - 2026-04-27
+
+### Added
+- map webhook payloads into data packets
+
+### Changed
+- add fake AI pipeline contract coverage
+- centralize step config scaffolding
+- declare completion strategy
+- split Homeboy action checks
+
+### Fixed
+- make transition fan-out policy explicit
+- mark step exceptions as failures
+- validate conversation loop results
+- protect child engine context from packet metadata
+- require only downstream handler blockers
+- drain due step actions after CLI runs
+- preserve handler tool metadata for upsert handoff
+- drop stale status field references (regression from #1112)
+- drop `AFTER <col>` from retroactive column migrations
+- reject ambiguous step type targets
+- make queue consumption atomic
+- normalize reordered step execution order
+- protect engine configs from initial data
+- handle task status and no-op queue moves
+
+## [0.84.1] - 2026-04-27
+
+### Fixed
+- preserve handler-scoped tool definitions
+
+## [0.84.0] - 2026-04-27
+
+### Added
+- add portable bundle schema
+- add fetch handler dry-run alias
+- collapse user_message into prompt_queue with queue_mode enum
+- split prompt_queue payload polymorphism into two slots (#1292)
+
+### Changed
+- remove stale cleanup shims
+- share fetch HTTP helper
+- collapse handler config shapes
+- share duplicate helper implementations
+- route cleanup through system tasks
+- consolidate three consumers onto shared consumeFromQueueSlot
+- drop FlowAbilities proxy class
+- refactor(system-task): replace per-task if-block with declarative passthrough
+
+### Fixed
+- remove redundant PHP version guard
+- run schema migrations on plugins_loaded, not just activation
+- migrate queue UI from queue_enabled boolean to queue_mode enum
+- patch three callsites missed by the #1291 collapse
+- route flow update prompt through user_message; rename --set-prompt → --set-user-message
+- consult active agent context before owner→agent fallback (#1268)
+
+## [0.83.0] - 2026-04-25
+
+### Added
+- feat(system-tasks): make fan-out tasks undoable end-to-end
+- datamachine_post_types_for_meta_description filter for batch discovery (#1246)
+
+### Fixed
+- fix(system-tasks): propagate agent context end-to-end (closes #1208)
+- document queueable patch shape contract + log merged_keys
+- honor exclude_keywords config across fetch handlers
+- processed-items audit honors --pipeline filter and works on SQLite
+
+## [0.82.1] - 2026-04-25
+
+### Changed
+- consolidate chunked fan-out into BatchScheduler primitive
+
+### Fixed
+- remove pre-v0.67.0 layer-dir copy when convention_path applies
+- fix(memory paths): report convention_path target, not the dead layer dir
+- CallerContextDirective registers under modes key, not contexts
+
+## [0.82.0] - 2026-04-25
+
+### Added
+- add MergeTermMetaAbility as the post-resolution meta-write primitive
+- optional pipeline AI conversation transcript persistence
+- pass through wp_insert_term args from ResolveTermAbility::resolve()
+
+### Fixed
+- align retention windows to prevent orphaned processed_items (#1222)
+
+## [0.81.0] - 2026-04-25
+
+### Added
+- BrandTokens primitive + cached_file output mode
+
+### Changed
+- refactor(ai-step): split enabled_tools off handler_slugs (Phase 2b)
+- refactor(flow-step-config): collapse callsites onto FlowStepConfig helper
+
+### Fixed
+- fix(daily-memory): conservation guard against lossy compaction
+- preserve handler_config for handler-free step types
+- fix(ai-step): include agent_id in directive payload
+
+## [0.80.1] - 2026-04-24
+
+### Fixed
+- drop hardcoded handler_slug check; let step types own their config
+- carry agent_id and user_id from parent to child jobs
+
+## [0.80.0] - 2026-04-24
+
+### Added
+- queueable fetch step — drive handler params from prompt queue (#1196)
+
+### Changed
+- Dead code sweep in React admin
+
+## [0.79.1] - 2026-04-24
+
+### Changed
+- provider-agnostic template verifier (#1179)
+
+## [0.78.0] - 2026-04-23
+
+### Added
+- feat(upsert-post): add post_author parameter for create path
+
+## [0.77.0] - 2026-04-23
+
+### Added
+- generic idempotent upsert primitive + ResolvePostByPath helper
+- feat(composable-files): invalidation class + plugin state-change filter
+
+### Changed
+- disable homeboy autofix
+
+## [0.76.0] - 2026-04-22
+
+### Added
+- add agent-direction resolution helpers
+
+### Fixed
+- detect filter vs direct callable convention in resolveHandlerTools
+
+## [0.75.0] - 2026-04-21
+
+### Added
+- route all system tasks through execute-workflow engine
+
+## [0.74.0] - 2026-04-21
+
+### Added
+- feat(processed-items): time-windowed revisit API + filter wire point
+- bridge RequestBuilder to wp-ai-client when available
+
+### Fixed
+- use $mode after contexts -> modes rename in wp-ai-client dispatch log
+
+## [0.73.0] - 2026-04-21
+
+### Added
+- agent write --from-file + stdin support (#1149)
+
+## [0.72.0] - 2026-04-21
+
+### Added
+- **ActionPolicyResolver** (`inc/Engine/AI/Actions/ActionPolicyResolver.php`) — third sibling to `ToolPolicyResolver` and `MemoryPolicyResolver`. Decides whether a tool invocation executes directly, is staged for user approval (`preview`), or is refused (`forbidden`). Reads `agent_config.action_policy`. Resolution precedence: context-deny → per-agent tool → per-agent category → tool-declared default → mode preset → global default → `datamachine_tool_action_policy` filter.
+- **PendingActionStore** (generic successor to `PendingDiffStore`): kind-agnostic transient storage for tool invocations awaiting user resolution.
+- **PendingActionHelper** — convenience `stage()` method for tool handlers that need to produce a preview envelope. Fires `datamachine_pending_action_staged` action.
+- **ResolvePendingActionAbility** (`datamachine/resolve-pending-action`): generic resolver that dispatches by `kind` via the `datamachine_pending_action_handlers` filter. REST: `POST /datamachine/v1/actions/resolve`.
+- **`resolve_pending_action` chat tool** — thin BaseTool wrapper so the AI can close the loop on staged actions.
+- `datamachine-actions` ability category.
+- ActionPolicyResolver primitive for tool invocation approval
+- extractor/resolver filters + edge typing (#1143)
+
+### Changed
+- `ToolExecutor::executeTool()` now consults `ActionPolicyResolver` before invoking a tool handler. Forbidden invocations return an error; preview invocations stage via `PendingActionHelper` and return the standardized envelope instead of firing the handler. Tools without `action_policy` metadata resolve to `direct` — behavior is unchanged for all existing tools.
+- `ToolExecutor::executeTool()` accepts optional `$mode`, `$agent_id`, and `$client_context` parameters so the resolver has enough context. Old 4-arg callers continue to work (defaults: `mode=chat`, `agent_id=0`, `client_context=[]`).
+- `AIConversationLoop::execute()` forwards `$context`, `$payload['agent_id']`, and `$payload['client_context']` into `ToolExecutor::executeTool()`.
+- finish contexts → modes rename across model-selection, REST, and DB (#1138)
+- Delete AGENTS.md and CLAUDE.md
+
+## [0.71.0] - 2026-04-21
+
+### Added
+- **AgentModeDirective** (priority 22) replaces per-agent context files with a runtime directive. `AgentModeRegistry` replaces `ContextRegistry` (kept as `class_alias` shim). `datamachine_contexts` action fires via `do_action_deprecated()` from `datamachine_agent_modes`. Built-in modes: `chat`, `pipeline`, `system`. Extension modes (`editor`, `bridge`) provide content via `datamachine_agent_mode_{slug}` filter. MemoryFileRegistry metadata key renamed `contexts` → `modes` with BC shim. (#1129)
+- **Tool registry consolidation**: `chubes_ai_tools` filter consolidated into `datamachine_tools`; tool metadata `contexts` renamed to `modes`. (#1130)
+- **IterationBudget primitive**: generic bounded-iteration primitive used to enforce run limits. API: `increment()`, `exceeded()`, `remaining()`, `current()`, `ceiling()`, `toResponseFlag()`. Cross-site A2A chain depth exceedance returns 429 with `datamachine_chain_depth_exceeded`. (#1125)
+- **Outbound client for cross-site agent calls** via `CallerContext` headers. (#1123)
+- **`datamachine_conversation_store` filter seam** + `ConversationStoreInterface` route for raw-SQL chat leaks. (#1118, #1120)
+- **RecurringScheduler primitive** + schedule registry — extracted reusable recurring-task infrastructure. (#1117)
+- **Multi-agent DB primitives** + REST list bugfixes; scope-aware defaults and per-user access resolution in list-agents; locked-in self-service agent creation contract via tests. (#1110, #1112, #1113)
+- New CLI: `wp datamachine agents cleanup-legacy-context-files [--dry-run]` for removing stale on-disk context files after the AgentMode migration.
+- New docs: `docs/core-filters.md` documents AgentMode filter/action/registry.
+- datamachine_register_agents hook + dogfooded default admin agent
+- CallerContextDirective — surface authenticated A2A caller identity to receiving agent
+- consolidate chubes_ai_tools + rename contexts → modes
+- feat(engine/auth): IterationBudget primitive + cross-site A2A chain depth (closes #1122)
+- AgentModeDirective — replace per-agent context files with runtime directive
+- outbound client for cross-site agent calls (closes #1121)
+- route raw-SQL chat leaks through ConversationStoreInterface
+- extract RecurringScheduler primitive + schedule registry (closes #1114)
+
+### Changed
+- Payload key `context` → `agent_mode` (both set during migration window for BC).
+- `MemoryFileRegistry`: drop unused header arg; move header ownership from core to registrar. (#1126, #1127)
+- drop unused header arg from MemoryFileRegistry
+- lock in self-service agent creation contract
+- refactor(list-agents): scope-aware defaults, per-user access resolution
+
+### Removed
+- Per-agent `contexts/*.md` infrastructure: scaffolding no longer creates `contexts/` subdirectories; REST API drops `/files/agent/contexts/*` routes; admin file listing no longer surfaces context files; `AgentBundler` no longer exports/imports `contexts/`; `DirectoryManager::get_contexts_directory()` removed. (#1129)
+
+### Fixed
+- fix(import-export): restore flows + handler_configs on pipeline import (#1133)
+- fix(import-export): honor step_config on pipeline import (#1133)
+
+## [0.70.2] - 2026-04-20
+
+### Changed
+- remove dead legacy fan-out skip path from UpsertStep
+- replace DailyMemorySelectorDirective with opt-in AgentDailyMemoryDirective (closes #1103)
+
+### Fixed
+- Fix AI conversation never completing due to non-AI handler slugs in completion gate
+
+## [0.70.1] - 2026-04-19
+
+### Changed
+- rename executeUpdate() → executeUpsert() to complete upsert rename
+
+## [0.70.0] - 2026-04-19
+
+### Added
+- MemoryPolicy resolver for per-agent memory file policy
+- add token expiry and health indicators to auth status CLI
+- list_subtree + route daily memory and context files through store
+
+### Changed
+- rename `update` step type to `upsert`
+- scale Pipelines admin page — N+1 queries + selector search
+- drop redundant _datamachine_post_pipeline_id (#1091)
+
+### Fixed
+- batch child jobs silently skip update step (#1096)
+- green test suite — 0 failures, 933 passing (#1004)
+
+## [0.69.0] - 2026-04-17
+
+### Added
+- introduce AgentMemoryStoreInterface + datamachine_memory_store filter
+- add post_parent support to wordpress_publish ability
+
+### Changed
+- consolidate file consumers behind AgentMemory facade
+- apply phpcbf auto-fixes across 57 files
+- Scope SOUL.md and MEMORY.md to interactive contexts only
+- Remove Rules and Context from SOUL.md template, remove ghost content guidelines from RULES.md
+- Add datamachine_conversation_runner filter for runtime adapters
+- Remove 'All Agents' option from AgentSwitcher dropdown
+
+### Fixed
+- centralize post origin tracking across all tool executions
+- establish agent execution context in pipeline AI steps
+- Fix WP-CLI writes to cap-gated memory files when no user context
+- remove agent status field — dead weight with no practical enforcement
+- resolve 4 lint/audit findings across data-machine
+- restore datamachine/pagespeed ability name
+- Fix ability category slug format — use dashes instead of slashes
+
+## [0.68.0] - 2026-04-15
+
+### Added
+- add datamachine/get-backlinks ability
+- ability categories and tool-ability linkage for pipeline tool scoping
+- extract DailyMemoryStorage interface with pluggable storage filter
+
+### Changed
+- Write composable files only to convention_path — stop dual-writing AGENTS.md
+- Remove post/term lifecycle hooks from SITE.md regeneration
+- Auto-regenerate composable files on plugin activation/deactivation
+- Add hooks to daily memory archive for custom storage handlers
+
+### Fixed
+- include must-use plugins and drop-ins in SITE.md scaffold
+- chat_sessions table not created on SQLite due to COMMENT clauses in dbDelta
+- harden agent files API error handling to prevent React crash
+- scope agent memory files to selected agent in admin UI
+- move Agents above Pipelines in wp-admin menu
+
+## [0.67.0] - 2026-04-13
+
+### Added
+- unify agent read/write to support all files, not just MEMORY.md
+- add datamachine_oauth_callback_url filter hook (closes #1041)
+
+### Changed
+- skip flow_config longtext for summary/ids modes, fix list next_run (closes #934)
+- fix 22 stale test failures — align tests with current API surface
+
+### Fixed
+- route tool access level checks through PermissionHelper for manage_options fallback
+- route CLI flow run through run-flow ability instead of execute-workflow (closes #1036)
+
+## [0.66.0] - 2026-04-11
+
+### Added
+- OAuth2 support for public clients, implicit flow, and PKCE
+
+## [0.65.2] - 2026-04-11
+
+### Changed
+- remove migrations.php monolith, switch to split files
+- restrict homeboy to audit-only (no refactor/autofix)
+
+### Fixed
+- scaffold shared-layer files (RULES.md) during agent creation
+
+## [0.65.1] - 2026-04-11
+
+### Changed
+- Optimize jobs cleanup: replace LIKE with IN for status queries
+- Add composable file generation infrastructure
+- Force direct filesystem method in context file scaffolding
+- Add name search filtering to pipeline list across ability, CLI, REST, and DB layers
+
+### Fixed
+- Fix npm security vulnerabilities in transitive dependencies
+- Fix section slug example in SectionRegistry docblock
+- require explicit method key in tool definitions instead of fallback
+- respect tool definition method key in ToolExecutor::executeTool()
+
+## [0.65.0] - 2026-04-09
+
+### Added
+- add agent export/import CLI commands for portable agent bundles
+- add agent lifecycle hooks (created, updated, deleted)
+
+### Changed
+- Replace hardcoded agent paths with MemoryFileRegistry query
+- Delegate CLI files write to ability, fix JSON_UNQUOTE for SQLite
+- remove workspace knowledge from core
+
+### Fixed
+- Fix Action Scheduler notice on every WP-CLI command
+- create default agent on activation before scaffolding files
+- resolve startup errors on fresh installs and PHP 8.5 deprecation
+- replace MySQL-only schema queries with SQLite-compatible helpers (closes #1025)
+- Fix AS init timing error in SystemAgentServiceProvider
+
+## [0.64.0] - 2026-04-03
+
+### Added
+- add datamachine/send-message ability for canonical chat message dispatch
+
+### Changed
+- Revert "fix: single-arg AS scheduling for database flow execution (#1018)"
+
+### Fixed
+- eliminate dual-path flow execution — execute-workflow is ephemeral only
+- single-arg AS scheduling for database flow execution
+- rename nonce field to avoid REST API cookie auth collision
+- manually validate cookie in authorize endpoint for browser flow
+
+## [0.63.1] - 2026-04-03
+
+### Added
+- add token-level runtime context for agent auth
+- add datamachine_agent_authorize_pre_token filter for PKCE support
+
+### Changed
+- Merge Agent Ping into System Task framework
+- Add chat bridge hooks: response complete action and /agents/me endpoint
+- Extract skill to standalone data-machine-skills repo
+
+### Fixed
+- scope pending session reuse by token login
+- resolve all Dependabot security alerts (lodash, picomatch, yaml, flatted, brace-expansion, serialize-javascript, path-to-regexp)
+- register ability hooks during plugins_loaded, not init
+
+## [0.63.0] - 2026-04-02
+
+### Added
+- add ContextRegistry for execution context registration
+- add unread messages backend
+
+### Changed
+- add is_wp_error() safety checks at all ability caller sites
+- Add context-aware injection to MemoryFileRegistry
+- Save sent emails to IMAP Sent folder after wp_mail()
+- align Chat REST handlers with core Abilities API contract
+
+### Fixed
+- Fix flows create --step_configs not applying handler configs
+- update .buildignore to exclude staging dir instead of build/
+
+## [0.62.0] - 2026-03-29
+
+### Added
+- add datamachine_can_access_agent filter to PermissionHelper
+
+### Fixed
+- defer memory file scaffold when Abilities API unavailable at activation
+
+## [0.61.0] - 2026-03-29
+
+### Added
+- add public access level for anonymous-safe chat tools
+
+### Changed
+- Add task_type indexed column to jobs table for fast system task lookups
+- Add performance indexes to jobs table for scale
+- centralize canonical content diff previews
+- use shared chat transcript copy helper
+- Revert "chore(ci): homeboy autofix — refactor (115 files)"
+- Merge main into feat/public-tool-access-level
+- resolve chat tools per-tool instead of all-or-nothing
+
+### Fixed
+- grant datamachine_chat capability to contributor role
+- add get_username() to BaseAuthProvider for standardized username access
+- non-OAuth auth providers save config to wrong storage key
+- trust active editor client context in chat
+- resolve test merge conflict for public access level
+
+## [0.60.0] - 2026-03-25
+
+### Added
+- preview mode for content abilities + server-side diff resolution
+
+## [0.59.0] - 2026-03-25
+
+### Added
+- Add flow pause/resume with non-destructive enabled boolean
+
+### Changed
+- standardize on item_identifier as canonical name for processed item dedup key
+
+### Fixed
+- drop orphaned per-site agent tables after network migration
+- defer markProcessed to pipeline completion to prevent dropped events
+- align InsertContentAbility tool registration with datamachine_tools filter signature
+
+## [0.58.0] - 2026-03-24
+
+### Added
+- move InsertContentAbility to core alongside other content abilities
+- HTML-aware smart text replace in EditPostBlocksAbility
+- context-scoped agent memory files (contexts/{context}.md)
+
+### Changed
+- add client_context parameter and ClientContextDirective for chat
+- Remove workspace infrastructure from core (moved to extension)
+- migrate ChatSidebar to @extrachill/chat useChat hook
+
+## [0.57.1] - 2026-03-24
+
+### Fixed
+- filter non-handler packets before fan-out to prevent dead grandchildren
+
+## [0.57.0] - 2026-03-24
+
+### Added
+- add datamachine_pre_ai_step_check filter for pre-AI dedup
+- scope agent dropdown to current site using site_scope column
+
+### Changed
+- add concurrency group to cancel stale PR runs
+
+### Fixed
+- use get_blog_option() for multisite log level check
+- silence fan-out grandchild handler-miss noise in UpsertStep
+- inline continuation for single-packet step transitions
+- prevent duplicate tool calls with full conversation history dedup
+- enforce concise skip_item reasons (2-5 words max)
+- add log level gate to prevent debug/info writes when level is set higher
+- Use correct parameter name when assigning taxonomies
+- sync package.json version to 0.56.0 (manual release left versions split)
+- verify AS action persistence inside FlowScheduling primitive
+
+## [0.56.0] - 2026-03-23
+
+### Added
+- config context columns in CLI: `pipelines list` shows location/coordinates, `flows list` shows handler config summary (coordinates, city, domain, venue name, taxonomy selections)
+- per-agent redirect URI validation and auth callback handler
+- browser-based agent authorization flow
+- universal handler dry-run command (`wp datamachine test`)
+
+### Fixed
+- `scheduling_unchanged()` now verifies AS action exists via `as_next_scheduled_action()` before skipping re-schedule — prevents orphaned flows when AS wasn't loaded during CLI creation
+- remove hardcoded `location` taxonomy from CLI config summary — core reads `taxonomy_*_selection` keys generically
+- show OAuth callback feedback and populate saved config values in settings
+
+### Changed
+- migrate agent tables to network scope (base_prefix)
+
+## [0.55.2] - 2026-03-22
+
+### Changed
+- add 'list' output mode that skips handler enrichment
+
+## [0.55.1] - 2026-03-22
+
+### Changed
+- batch next-run and service lookups in FlowFormatter
+
+## [0.55.0] - 2026-03-22
+
+### Added
+- validate interval keys at creation time and add human-friendly aliases
+
+### Changed
+- fix N+1 queries in flows list — single query for flows and batched job lookup
+
+## [0.54.2] - 2026-03-22
+
+### Fixed
+- save requested schedule on flow creation instead of manual-first workaround
+
+## [0.54.1] - 2026-03-22
+
+### Changed
+- drop cron schedule — push to main covers release
+
+### Fixed
+- truncate job status to varchar(255) limit before DB write
+- remove GitHub handler instantiation missed in extraction
+
+## [0.54.0] - 2026-03-21
+
+### Added
+- multi-modal chat messages — attachments in REST endpoint, content blocks in conversation
+- ability-linked tool permissions — tools declare which ability they wrap, resolver checks permissions
+
+### Changed
+- extract GitHub + workspace devtools to data-machine-code extension
+
+## [0.53.0] - 2026-03-21
+
+### Added
+- self-service agent creation for non-admin users
+
+## [0.52.0] - 2026-03-21
+
+### Added
+- agent self-identity in SOUL.md scaffolding and name-change propagation
+
+## [0.51.0] - 2026-03-21
+
+### Added
+- add $meta parameter to HandlerRegistrationTrait
+
+### Fixed
+- engine_data clobber in AIStep + revert UpsertStep fallback + transport safety
+
+## [0.50.1] - 2026-03-21
+
+### Changed
+- Add engine data fallback for update step when data packets are missing
+
+## [0.50.0] - 2026-03-21
+
+### Added
+- memory file editability — read-only SITE.md/NETWORK.md, admin-gated RULES.md
+- datamachine/scaffold-memory-file ability + daily memory integration
+- unified FileScaffolder for all memory file creation
+- auto-scaffold USER.md from WordPress profile on first chat
+- automatic data retention policies for jobs, logs, processed items, and AS actions
+- migrate to homeboy-action v2 convention-driven CI
+- auto-refresh NETWORK.md on multisite structural changes
+
+### Changed
+- Pass enabled_tools through to handler_slugs in ephemeral workflows
+- Preserve initial_data when RunFlowAbility builds engine snapshot
+- Add PostIdentityIndex table for fast post deduplication
+- add workflow_dispatch trigger for manual runs
+- ability IS the primitive, remove FileScaffolder wrapper
+- enable automated releases via cron schedule
+- replace chat UI primitives with @extrachill/chat shared package
+- Remove pipeline-level model/provider overrides — context system is the authority
+- Admin UI: Remove AI step config modal entirely — prompt is inline, everything else is context-managed
+
+### Fixed
+- Fix package.json version drift: 0.48.0 → 0.49.0
+- Fix readme.txt version drift: 0.48.0 → 0.49.0
+- guard scaffold ability lookups to prevent _doing_it_wrong in tests
+- agent_id scoping for chat sessions + schema nullable types
+- chat REST API crashes from WP_Filesystem null + missing agent_id
+- WP_Filesystem null in REST context + missing agent_id in handle_chat
+- use execute_callback not callback for ability registration
+- declare --agent flag on all agent memory CLI subcommands
+- flows update --handler-config unwraps handler slug correctly
+- flows create respects --handler-config flag
+
+## [0.49.0] - 2026-03-19
+
+### Added
+- Enriched SITE.md with site structure, roles, plugin descriptions, and REST namespaces (#872)
+- Consolidated SiteContext into SITE.md with auto-refresh (#871)
+- Network-scoped USER.md and NETWORK.md for multisite (#816, #873)
+- Capture token usage from AI providers (#849)
+
+### Fixed
+- Action Scheduler async dispatch never fired from cron/CLI contexts — 623x throughput improvement
+- Jobs page: replaced Source column with Pipeline, Flow, and Label columns
+
+## [0.48.0] - 2026-03-18
+
+### Fixed
+- create-flow scheduling race — AS action was never registered
+
+## [0.47.0] - 2026-03-18
+
+### Added
+- Agent runtime auth: bearer tokens, auth middleware, and capability ceiling
+- Auth CLI: set-token and refresh commands for headless credential injection
+- Jobs page: parent/child expand UI with lazy-loaded children
+
+### Changed
+- Auth REST API refactored to thin wrappers over abilities
+- CI: adopt categorized lint/test auto-issues from homeboy-action
+
+### Fixed
+- Batch fan-out child jobs created as processing instead of pending (#858)
+- Jobs page SQL performance: removed CAST from JOINs, added child_count subquery
+
+## [0.46.1] - 2026-03-18
+
+### Fixed
+- remove hardcoded content-type assumptions from skip_item tool
+
+## [0.46.0] - 2026-03-18
+
+### Added
+- add getDefaultMaxItems() override point for subclass handlers
+
+## [0.45.0] - 2026-03-18
+
+### Added
+- add audit subcommand and enhanced clear filters to processed-items CLI
+- display batch parent/child relationships on Jobs page
+
+### Fixed
+- dedup was permanently discarding items cut by max_items cap
+- system task status showing stale failure + add auth providers settings tab
+
+## [0.44.1] - 2026-03-17
+
+### Fixed
+- flows list CLI defaults to all flows instead of 20
+
+## [0.44.0] - 2026-03-17
+
+### Added
+- add link opportunities command — ranked internal linking opportunities from GSC + link graph
+- add email handler — send and fetch emails
+
+### Changed
+- remove inject-category-links ability and CLI command
+
+### Fixed
+- merge DailyMemoryTask into single prompt, add extensible prompt variables, remove emojis
+- prevent AI step from creating ghost child jobs (#832)
+
+## [0.43.3] - 2026-03-17
+
+### Changed
+- replace agent identity directives with context directives
+
+### Fixed
+- prevent schedule reset when scheduling config hasn't changed
+
+## [0.43.2] - 2026-03-16
+
+### Fixed
+- resolve undefined $agent_id and $job_snapshot in AIStep::executeStep()
+
+## [0.43.1] - 2026-03-16
+
+### Fixed
+- enable publish dedup by default, add source-URL dedup, forward pre-selected taxonomies
+- apply lint autofix — 46 files, 97 errors → 19, 249 warnings → 6
+
+## [0.43.0] - 2026-03-16
+
+### Added
+- add editable AI prompts to system tasks UI
+
+### Changed
+- Extensible memory file layers — registry-driven, decoupled, layer-aware
+- Remove user-layer MEMORY.md — agent-only, period
+- remove standalone tool context — redundant with default model
+
+### Fixed
+- make daily memory parameter explicitly nullable
+
+## [0.42.0] - 2026-03-16
+
+### Added
+- image optimization system task — diagnose + fix oversized images
+- broken external link detection
+- update WordPress handler to use resolveMediaUrls()
+- add resolveMediaUrls() to PublishHandler base class
+- add core video primitives — upload, validation, metadata, and pipeline plumbing
+
+### Changed
+- rename VideoAbilities to MediaAbilities, abilities to upload-media/validate-media
+- extract MediaValidator base class from ImageValidator and VideoValidator
+
+## [0.41.0] - 2026-03-15
+
+### Added
+- redesign System Tasks tab with cards, trigger info, and Run Now
+- make system task AI prompts editable via REST API and CLI
+- add CLI commands for system, handlers, taxonomy, step-types, and processed-items
+
+### Changed
+- extract TaskRegistry and TaskScheduler from SystemAgent
+- make memory cleanup default prompt universal
+
+### Fixed
+- resolve all npm security vulnerabilities via overrides
+- remove AI model config from Manage tab, clarify Configuration labels
+- enqueue shared tab styles on Logs admin page
+- add migration to assign orphaned resources to sole agent
+- surface shared layer in Memory tab, pass agent_id in create endpoints, add layer grouping
+- always show agent switcher and provide create-agent path in UI
+
+## [0.40.2] - 2026-03-13
+
+### Fixed
+- make ensure_context_column index migration idempotent — check before DROP/ADD to avoid DB errors on every page load
+
+## [0.40.1] - 2026-03-13
+
+### Changed
+- replace agent type with context and agent ids
+
+### Fixed
+- sync version targets to 0.40.0 — missed in v0.40.0 release
+- add agent switcher to tabs header, refactor Manage tab
+- redact local file paths from AI payloads
+- defensive cleanup for orphaned scheduled actions
+- Resolve audit issues #717, #722, #775
+- Log level filter not applying in logs page
+- Filter tools by context in pipeline UI
+- centralize plugin defaults for settings UI
+
+## [0.40.0] - 2026-03-10
+
+### Added
+- Agent edit view with identity editing and access management
+- Agent management UI — list table, create modal, delete confirmation
+- full REST API for agent CRUD and access management
+- agent update ability + register all CRUD as WP Abilities
+- add Chat CLI commands for session management
+- agent scoping for chat sessions — close the last Admin UI gap
+- ExecutionContext and EngineData carry agent identity
+- agent_id context propagation in create/duplicate abilities
+- agent CRUD CLI — create, show, delete, access management
+- add --agent flag across all CLI commands
+- Add granular daily memory selection for flows
+- add datamachine/read-debug-log ability
+- extensible settings — track handled keys, add filter, support github_pat
+
+### Changed
+- GitHubIssueTask delegates to GitHubAbilities::createIssue()
+
+### Fixed
+- use handler discovery tools instead of inline docs
+- use 'chat' as default agent_type in chat list CLI
+
+## [0.39.0] - 2026-03-09
+
+### Added
+- feat(#741): delete AgentType class — replace with string literals
+- feat(#741): rename surface→context, add per-agent tool policies
+- feat(#741): unify tool registry — single datamachine_tools filter with context arrays
+- feat(#746): modernize logging — replace Monolog file routing with agent_id database-backed logs (#747)
+- feat(#735): agent-first scoping — Phase 1 schema, DB layer, and permissions (#738)
+- feat(#573): multi-agent UI scoping — REST API user_id filtering and ownership guards (#734)
+- feat(#731): unify duplicate detection with SimilarityEngine and check-duplicate ability
+- feat(#626): add wp datamachine flows bulk-config CLI command
+- feat(#645): add ToolPolicyResolver — unified tool resolution for all surfaces
+
+### Changed
+- deprecated methods delegate to ToolPolicyResolver, one code path
+- decouple Jobs from pipeline_id/flow_id requirement (#571) (#725)
+
+### Fixed
+- remove brain emoji and special styling from SOUL.md, rename Agent page to Agents (#736) (#739)
+- fix(#730): queue-add uses unified check-duplicate instead of QueueValidator
+- rewrite SettingsCommandTest to use Abilities API instead of WP_CLI
+- remove legacy handler_config/handler_slug singular format (#712)
+- fix(#699): move batch state from transient to engine_data (#710)
+- resolve last 2 test failures — flow_id type cast and QueueAbility re-registration (#724)
+- rename $class param to $class_name in StepTypeRegistrationTrait — fixes bootstrap crash (#711)
+
+## [0.38.0] - 2026-03-08
+
+### Added
+- feat(#704): publish-level duplicate detection for wordpress_publish handler (#706)
+- add 'wp datamachine agent paths' discovery subcommand (#708)
+- add MEMORY.md cleanup phase to daily memory task (#705)
+- agent CRUD CLI — create, show, update, delete, config commands (#702)
+
+### Changed
+- agent identity cleanup — rename ability, migrations extraction, legacy removal (#709)
+- Add one-time scheduled flow execution (#659)
+
+### Fixed
+- add null guard to get_workspace_directory() filesystem access (#713) (#714)
+- resolve release blockers —  param rename + PHPCS suppressions (#715)
+- scale memory cleanup safety threshold for oversized files (#707)
+- fix(#698): add log auto-rotation, fix cleanup logic, expose all log levels (#701)
+- treat empty fetch/event_import as completed_no_items regardless of history (#700)
+- swap migration/scaffold order and add RULES.md scaffolding (#703)
+- fix(#695): move handler config sanitization into ability layer (#697)
+- resolve 20 test failures across 5 test classes (#671)
+- fix(#689): resolve post_type from flow publish step for queue dedup validation (#693)
+- fix(#687): UserResolver returns 0 (unscoped) when no --user flag provided (#694)
+- fix(#688): scope tool definition cache by flow_step_id (#690)
+- agent file save returns 400 — apiFetch sends JSON, not text/plain (#692)
+- prevent duplicate inline reviews from parallel jobs (#691)
+- suppress known-safe DB queries + fix corrupted is_writable calls (#669)
+- GSC submit_sitemap — upgrade OAuth scope to read-write and add Content-Length header (#656)
+- sync version targets to 0.37.1
+
+## [0.37.1] - 2026-03-07
+
+### Changed
+- split release workflow into 3 independent jobs (#665)
+- decompose FileAbilities into AgentFileAbilities + FlowFileAbilities
+
+### Fixed
+- align named argument `class` → `class_name` across all step type callers
+- replace raw PHP file operations with WP equivalents (#668)
+- batch lint autofix — 72 violations across 53 files (#667)
+- auto-fix 59 PHPCS violations via homeboy lint --fix (#664)
+- auto-fix 30 Yoda and short ternary violations (#663)
+
+## [0.37.0] - 2026-03-06
+
+### Added
+- multi-agent support — DB schema user_id scoping, directive user context resolution, CLI --user flag (#568, #572, #574)
+- granular WordPress capabilities and PermissionHelper v2 (#651)
+- layered memory architecture — site/agent/user memory file scoping (#654)
+- first-class agent entities with chat session wiring (#655)
+- layered architecture migration foundation (#647)
+- workspace global read tools, git abilities, scoped fetch/publish handlers (#620, #621, #622)
+- agent tools settings split into dedicated tab (#635)
+- MySQL service container for CI test workflow
+- homeboy lint autofix and baseline
+
+### Changed
+- CI: split PR checks into separate lint, test, audit jobs
+- CI: release check workflow on push tags only (not every main merge)
+- CI: scoped test and audit for PRs (changed files only)
+
+### Fixed
+- normalize malformed shared AI key storage — self-heal serialized string back to array (#660)
+- default max_items to 1 at runtime to prevent unbounded batch fan-out
+- nullable output schema types for CreatePipeline and CreateFlow abilities (#577)
+- logger class import fatal redeclare crash in tests (#591)
+- permission callback tests — WP-CLI bypass filter, WP 6.9 error codes (#592)
+- FlowsCommandTest rewrite for Abilities API (#594)
+- pre_http_request filter signature for WP 6.9 (#595)
+- tool tests rewrite for WP 6.9 Abilities API (#596)
+- ImageGenerationPromptRefinement and JobAbilities test rewrites (#606)
+- AI step emitting conversation turns as DataPackets (#609)
+- fail orphaned batch parents instead of leaving stuck processing jobs (#627)
+- classify upsert-step tool misses as agent_skipped (#628)
+- include schedule and max_items in flows list output (#629)
+- align global AI tool classes with BaseTool conventions (#632)
+- complete global tool convention methods for QueueValidator
+
+## [0.36.0] - 2026-03-03
+
+### Added
+- cron expressions for flow scheduling (#482)
+- wp datamachine auth CLI commands (#508)
+- GA4 CLI batch — new actions, sorting, hostname filter, period comparison (#538, #548)
+- IndexNow integration for instant search engine notification (#443)
+- datamachine_github_issue_repos filter for extension plugin repo registration (#315)
+- HandlerAbilities unit tests for getConfigFields (#532, #558)
+- Homeboy CI workflow for automated PR lint and test
+
+### Changed
+- extract tool config save into BaseTool, remove wp_send_json exits (#535)
+
+### Fixed
+- prevent LogHandler crash during bootstrap when abilities not yet registered (#557)
+- jobs list status prefix matching and --since date filter
+- display structured error details in jobs show for failed jobs
+- persist structured error context in engine_data on job failure
+- auto-run DB migrations on deploy without activation hook
+- single-handler steps show blank settings display (#528)
+- merge base handler settings fields into getConfigFields for validation (#541)
+- ensure UNIQUE index on processed_items and deduplicate existing rows (#542)
+- update composer.lock to match composer.json (#559)
+
+## [0.35.0] - 2026-03-03
+
+### Added
+- pipeline batch fan-out — PipelineBatchScheduler (#504)
+- flow-scoped memory files with shared MemoryFilesReader (#500)
+- handler multi-return — all fetch handlers return multiple items (#507)
+- max_items setting for fetch handlers with cap at 100 (#510)
+- jobs cleanup CLI command and auto-expiry via Action Scheduler (#519)
+- queue validate CLI subcommand (#512)
+- inject-category deterministic internal link injection (#521)
+
+### Changed
+- unified DataPacket wrapping in FetchHandler.get_fetch_data() (#506)
+- consolidate dedup into FetchHandler base class (#516)
+- seed child job engine data from DataPacket metadata (#515)
+- extract site-specific title patterns into filterable hook in crosslinker
+- MetaDescriptionTask writes to post_excerpt instead of custom meta key (#522)
+- SKILL.md rewritten as discovery-first CLI guide (#494)
+
+### Fixed
+- PublishWordPressAbility bypasses WordPressSettingsResolver — posts get post_author 0 in headless contexts (#525, #527)
+- WordPressSettingsResolver hardcoded user ID 1 fallback — now looks up first administrator (#527)
+- rename PostTrackingTrait.php to match PostTracking class name (#518)
+- use valid JobStatus for batch cancellation (#517)
+- CLI --url flags renamed to avoid WP-CLI global parameter conflict (#493)
+
+## [0.34.0] - 2026-03-02
+
+### Added
+- wp datamachine image CLI command (#407)
+- GitHub integration — fetch handler, abilities, CLI, chat tools (#413)
+- meta description system task for SEO generation (#480, #490)
+- unified posts list command with combinable tracking filters (#465, #491)
+- expose pipeline memory files in pipelines show + memory-files CLI (#470, #475)
+- flows get shows detailed view with step configs (#469, #474)
+
+### Changed
+- extract SelectionMode utility for taxonomy selection logic (#299) (#457)
+- auto-fix PHPCS lint warnings across codebase
+- FlowStepNormalizer::getEffectiveSlug() — single source of truth for config slug resolution (#488)
+- refactor PostTrackingTrait into automatic PostTracking in base handlers (#464)
+
+### Fixed
+- align GitHubAbilities and GitHubTools with codebase conventions (#462)
+- resolveHandlerStep checks handler_slugs only, remove multi-pattern drift (#461)
+- set-prompt no longer wipes handler config, detects agent_ping steps (#458, #459)
+- normalizer wiping handler config for non-handler steps (#485)
+- provide actionable guidance on PageSpeed 429 rate limiting (#486)
+- parse Bing date format, add staleness detection and days filter (#484)
+- move annotations inside meta for WP 6.9 Abilities API compatibility (#483)
+- replace flat title word scoring with IDF-weighted scoring in crosslinker (#481)
+- agent files created with group-writable permissions 0664 (#467)
+- OAuth2 proactive refresh self-heals when token expires (#468)
+- move post tracking meta keys from namespace constants to class constants (#466)
+
+## [0.33.0] - 2026-02-27
+
+### Added
+- agent files CLI and namespace refactor (#454)
+- add GD template image generation engine for branded social graphics
+- add token lifecycle management to BaseOAuth2Provider
+- deterministic scheduling stagger + consolidate scheduling code paths
+
+### Changed
+- temporary revert for PR
+- remove Reddit handler and dead docs from core
+- Add BaseOAuth2Provider test coverage for token lifecycle management
+- BaseOAuth2Provider token lifecycle management
+- remove default flow auto-creation from create-pipeline
+- remove dead build_command — wordpress module handles builds
+
+### Fixed
+- Fix workspace read offset/limit and directory permissions (#453)
+- Fix workspace read offset/limit and directory permissions
+- sync version targets and add modules to homeboy.json (#436)
+- match trySetFeaturedImage return type with parent class (#434)
+
+## [0.32.0] - 2026-02-26
+
+### Added
+- System Task Runner step type (#277)
+- add parent_job_id column for first-class job hierarchy
+- batch tracking with parent jobs, cancellation, and CLI commands
+- backfill undo support to AltTextTask and ImageGenerationTask
+- Generic job undo system with effects tracking (#425)
+- self-healing scaffolding — recreate missing agent files on first read
+
+### Changed
+- Add batch scheduling to prevent Action Scheduler flooding (#417)
+- Split audit into focused abilities with caching, REST API, and chat tool
+- Add internal link audit ability: scan content, build link graph, find orphans
+- Add NetworkSettings for network-wide defaults with per-site override cascade
+- Add BaseAuthProvider tests covering site-level option storage
+- Share auth provider credentials across multisite network
+- Include network-activated plugins in multisite scaffolding
+- Populate agent scaffolding with WordPress site data instead of empty placeholders
+
+### Fixed
+- ability registration timing for CLI context (#430)
+- add skip_default_flow to create-pipeline ability (#429)
+- internal linking scores by title similarity, not just taxonomy (#416) (#426)
+- jobs show displays engine data for all job types (#422) (#423)
+- memory system improvements — date bug, \n escaping, daily memory tool, SOUL.md guidance (#406)
+
+## [0.31.0] - 2026-02-25
+
+### Added
+- Google Analytics (GA4) and PageSpeed Insights integrations with CLI and REST layers
+- Chat sessions abilities API (create, get, list, delete)
+- Engine abilities API — migrate execution actions to abilities layer
+- Memory search ability for agent and daily memory files
+- Agent memory file size guardrails with actionable warnings
+- Posts recent CLI command (wp datamachine posts recent)
+- Workspace @file syntax for write and edit commands
+- Post context (post_id, post_type, published_url) in agent ping payload
+- Multisite support for plugin activation and new site creation
+- Comprehensive uninstall cleanup with multisite support
+
+### Changed
+- Decompose Chat.php god file into abilities + ChatOrchestrator
+- Route all file endpoints through abilities layer
+- Condense SKILL.md for agent operators (784 → 289 lines)
+- Comprehensive SKILL.md audit and rewrite
+- Update README to reflect current plugin scope and features
+
+### Fixed
+- Conversation loop multi-handler bug (#328)
+- PageSpeed category casing and guard page_filter for non-pagePath actions
+- Use direct function call for engine data merge in publish ability
+- Protect agent files from deletion
+- Clean up file-level side effects, misplaced namespace, and duplicated date parsing
+- Exclude all core memory files from pipeline memory picker
+
+## [0.30.0] - 2026-02-24
+
+### Added
+- Inbound webhook trigger for flow execution (#342)
+- Webhook rate limiting (#351)
+- Agent workspace for managed repo operations (#337)
+- Agent memory read/write as first-class ability (#332)
+- Expose agent memory as global AI tool
+- Agent Ping Callback API (#309)
+- Daily memory system — YYYY/MM/DD.md files for agent cognitive history (#348, #352)
+- System Tasks tab on Agent page with daily memory generation (#358)
+- Jobs delete CLI command
+- Workspace file operations with security hardening — read, write, edit, ls (#360)
+- Validate containment for workspace file paths
+- Support pre-authenticated context in PermissionHelper for webhook triggers (#356)
+- Default memory file creation on activation (SOUL.md, MEMORY.md, USER.md)
+- Enforce duplicate validation on queue-add ability (#326)
+
+### Changed
+- Extract FlowsQueueCommand and FlowsWebhookCommand from FlowsCommand (#349)
+- Move flows commands to Commands/Flows/ namespace
+- Rename agent CLI namespace to memory (#354)
+- Replace filter-based registry with OOP MemoryFileRegistry
+- Replace individual memory directives with CoreMemoryFilesDirective (#330)
+- Extract QueueValidator::validate() as shared API
+- Wire daily_memory_enabled to job lifecycle and ability gate (#355)
+- Comprehensive documentation audit and updates for v0.29.0 codebase
+- New documentation: WordPress as persistent memory for AI agents guide
+- Documented new abilities: analytics, content, internal linking, media, system
+
+### Fixed
+- Rename dm_ prefix to datamachine_ across all post meta and transients (#327)
+- Use UTC timestamps consistently in AgentPing (#336)
+- Fix conversation loop completing after first handler in multi-handler steps (#334)
+- Remove duplicate set() method in EngineData
+- Remove dead settings, stale comments, style cleanup
+- Remove AgentMemoryMigration (superseded by MemoryFileRegistry)
+- Remove uploads fallback for workspace directory (#362)
+
+## [0.29.0] - 2026-02-23
+
+### Added
+- Agent memory system — MEMORY.md auto-injected as directive at Priority 22
+- Fetch abilities for Reddit and RSS
+- WordPress post abilities (get, query, fetch media)
+- `--handler-config` flag for `flows update` CLI command
+
+### Changed
+- Handlers delegate to Abilities API for execution logic
+- Refactor UpdateWordPressAbility — delegate block operations to EditPostBlocksAbility, adopt HTML-attribute-safe text replace, use shared BlockSanitizer
+- Expose full tool schema (title, updates, block_updates, taxonomies) in wordpress_update pipeline handler
+- Rebase directive priorities with even spacing (10-80) for extensibility
+- Extract social media handlers (Twitter, Facebook, Threads, Bluesky, Pinterest) to data-machine-socials plugin
+- Remove Pinterest abilities from core (moved to data-machine-socials plugin)
+- Update documentation to reflect social media handler extraction
+
+### Fixed
+- WordPress update handler uses wp_get_ability instead of nonexistent wp_execute_ability
+- Register FetchWordPressMediaAbility and fix handler syntax errors
+- Add missing EngineData::set() method
+- Remove arbitrary limitation preventing last handler removal from flow steps
+- Remove Google Sheets handler references after extraction to data-machine-business
+
+## [0.28.3] - 2026-02-20
+
+### Fixed
+- update remaining self:: calls to FlowStepNormalizer in ability classes
+- rename Chat::get_table_name() to avoid static override conflict
+- update tests for disabled_tools opt-out pattern
+- Move handler CLI commands from pipelines to flows (correct scope)
+
+## [0.28.2] - 2026-02-20
+
+### Fixed
+- update activation hook for disabled_tools opt-out pattern
+
+## [0.28.1] - 2026-02-20
+
+### Added
+- CLI commands for managing publish step handlers
+
+### Changed
+- Remove debug log for system agent task handlers loaded
+- Remove pipeline context files (replaced by memory system)
+
+### Fixed
+- extract FlowStepNormalizer from trait to fix PHP 8.x deprecation
+
+## [0.28.0] - 2026-02-19
+
+### Added
+- Block content editing abilities — get, edit, replace Gutenberg blocks by index (GetPostBlocksAbility, EditPostBlocksAbility, ReplacePostBlocksAbility)
+- WP-CLI blocks command (wp datamachine blocks list|edit|replace)
+- Pinterest board selection — three modes: pre-selected, AI decides, category mapping
+- PinterestAbilities class with board sync, caching, and resolution
+- WP-CLI pinterest command (wp datamachine pinterest sync-boards|list-boards|status)
+- URL Inspection and Sitemaps endpoints for Google Search Console tool
+
+### Changed
+- Shared TabPanel styles across all admin pages (Agent, Logs, Settings)
+- InternalLinkingTask refactored to use block-level abilities for granular paragraph editing
+- Agent SOUL.md directive docs updated for 6-tier system
+
+### Fixed
+- Agent page response shape — query hooks now unwrap { success, data } responses
+- SOUL.md deletion hardening — FileAbilities now blocks deletion with error return
+
+## [0.27.0] - 2026-02-18
+
+### Added
+- Multi-handler steps — configure multiple publish handlers (WordPress + Pinterest) in a single pipeline step (#233)
+- Per-agent default provider/model configuration — assign different models to chat, pipeline, and system agents
+- Agent memory system — SOUL.md file-based identity, agent admin page with file browser/editor, settings migration (#279)
+- Pipeline memory file references — select agent memory files as AI context per-pipeline (#280)
+- Internal linking system agent task (#228)
+- Image generation insert mode with smart content-gap placement
+
+### Changed
+- Handler config normalized to handler_slugs/handler_configs as single source of truth (lazy migration, zero downtime)
+- Agent page consolidates memory files + configuration (tools, model, site context, max turns, webhook)
+- Settings page simplified — General, API Keys, Handler Defaults only
+- All tabbed admin pages now use @wordpress/components TabPanel
+- Frontend state management cleanup — eliminated local state mirroring in favor of TanStack Query
+
+### Fixed
+- Jobs page Unknown Pipeline/Flow resolved with fallback name lookup
+- InlineStepConfig race condition on initial page load
+- Non-handler step types (Agent Ping, Webhook Gate) preserve handler_config during normalization
+- Image generation sets featured image for standalone post_id calls
+- Empty prompt queue treated as skipped, not failure
+- Missing API endpoint registrations restored
+
+## [0.26.0] - 2026-02-17
+
+### Added
+- ChatErrorBoundary wraps chat sidebar with retry UI
+- BaseRepository abstract class for database CRUD patterns
+
+### Changed
+- ToolServiceProvider centralizes all 39 tool registrations — removed self-instantiation from global tools
+- Bootstrap consolidated: 48 require_once lines → single inc/bootstrap.php
+- EngineData consolidated: static retrieve/persist/merge methods + forJob() factory, procedural wrappers kept for compat
+- BaseRepository extracted: shared constructor, find_by_id, delete_by_id, count_rows, log_db_error — 6 repos migrated
+- Chat messages use TanStack Query cache as single source of truth (fixes dual-state race conditions)
+- Chat backend: executeConversationTurn() helper eliminates 3-way duplication across handle_chat/continue/ping
+- Request ID transient set before AI loop to prevent duplicate sessions on retry
+- Consolidated duplicate tool resolution — ToolExecutor delegates to ToolManager
+- Action closures extracted to dedicated Handler classes (FailJob, JobComplete, Log, LogManage, MarkItemProcessed)
+- datamachine_log split into write-only (LogHandler) + management (LogManageHandler via datamachine_log_manage)
+- Chat session dropdown replaced with @wordpress/components Dropdown
+- Chat sidebar CSS split into 5 component-aligned files with @import entry point
+
+### Removed
+- Legacy PHP settings tabs, sanitize callback, and vanilla JS (dead code, -1,045 lines)
+- Dead function datamachine_get_enabled_global_tools() (used wrong filter)
+- No-op identity filter registrations in Admin, DataMachineFilters, Handlers
+- Self-instantiation from all Global tool files
+
+### Fixed
+- Settings sanitization wiping cross-tab values (seeded from existing values + isset guards)
+- Chat message duplication and missing responses (#4/#5) via single source of truth + transient timing fix
+
+## [0.25.0] - 2026-02-17
+
+### Added
+- Bing Webmaster Tools analytics connector
+- Webhook Gate step type — pause pipeline until external webhook fires
+- Google Search Console connector
+- Agent Soul structured identity directive
+- GitHub Issue creation tool for System Agent
+- Amazon Affiliate Link tool
+- Chat sidebar tools: ManageJobs, ManageQueue, SendPing, SystemHealthCheck
+- Image prompt refinement via DM AI engine
+
+### Changed
+- FlowStepCard schema-driven refactor (658 → 198 lines)
+- Settings tabs use useFormState + shared SettingsSaveBar
+- Scoped queue cache invalidation to specific pipeline
+- Flow reconciliation polling extracted to useFlowReconciliation hook
+- Modal callbacks moved from PipelinesApp into zero-prop ModalManager
+- Consolidated duplicate API client + queryClient into shared modules
+- Removed legacy PHP settings tabs, sanitize callback, and vanilla JS (-1,045 lines)
+
+### Fixed
+- WP-CLI settings set fatal when ability returns WP_Error
+- ImageGenerationTask undefined $params in handleSuccess()
+- Settings sanitization wiping cross-tab values
+- DATAMACHINE_VERSION constant synced with header
+
+## [0.24.0] - 2026-02-16
+
+### Added
+- Pinterest publish handler (#175)
+- Job fail/retry abilities and CLI commands (#171)
+- CLI logs commands (#170)
+- Job show/list improvements with source-aware display and Action Scheduler status (#172)
+- Pipeline --set-system-prompt CLI flag (#164)
+
+### Fixed
+- JPEG conversion crash — use wp_get_image_mime() instead of protected get_mime_type() (#165)
+- Sideloaded image JPEG conversion for smaller file sizes (#161)
+- Queue subcommands show proper --help output (#176)
+
+## [0.23.2] - 2026-02-16
+
+### Fixed
+- Use correct Replicate models endpoint for image generation (fixes 422 errors)
+
+## [0.23.1] - 2026-02-16
+
+### Added
+- Bing Webmaster Tools analytics connector
+
+### Fixed
+- WP-CLI settings set fatal when ability returns WP_Error
+- ImageGenerationTask undefined $params in handleSuccess()
+
+## [0.23.0] - 2026-02-16
+
+### Added
+- System Agent architecture with task-based async processing
+- Image generation tool (global)
+- Queue validator tool for duplicate detection
+- site_url and wp_path in Agent Ping payload
+- flows show alias for flows get
+
+### Changed
+- Alt text generation refactored as ability primitive
+- Image generation refactored as ability primitive; tool wraps it
+
+### Fixed
+- Deferred ability instantiation to init hook (textdomain notice on WP 6.7+)
+- Deferred admin page filter registration to init hook
+- Synced DATAMACHINE_VERSION constant
+
+## [0.22.4] - 2026-02-16
+
+### Changed
+- Refactored image generation as ability primitive; tool wraps it
+
+## [0.22.3] - 2026-02-15
+
+### Changed
+- Maintenance release
+
+## [0.22.2] - 2026-02-14
+
+### Fixed
+- Rebuild stale JS assets — Jobs page now correctly shows Pipeline/Flow source instead of 'unknown'
+
+## [0.22.0] - 2026-02-11
+
+- feat(agent-ping): add reply_to field for custom channel routing (#111)
+- feat(queue): add queue-validate ability to check for duplicates (#110)
+- refactor(FlowStepCard): unify Agent Ping config handlers
+- Add Queue Performance settings to admin UI
+- Remove noisy queue tuning log
+
+## [0.21.5] - 2026-02-10
+
+- Queue validation: queue-add ability now checks for duplicate prompts in queue and similar existing posts before adding
+
+## [0.21.4] - 2026-02-08
+
+- Fix: pin webpack to 5.104.1 for security; remove legacy CircleCI config
+
+## [0.21.3] - 2026-02-08
+
+### Changed
+- Revert "release: v0.21.2"
+- v0.21.2
+
+### Fixed
+- Fix prompt display when queue enabled but empty
+
+## [0.21.2] - 2026-02-08
+
+- CLI: Added --set-prompt option to flows update command for updating handler step prompts via WP-CLI
+- CLI: flows get now shows prompt preview column (truncated to 50 chars)
+
+## [0.21.1] - 2026-02-05
+
+### Added
+- add datamachine_session_title_prompt filter for customizing session title generation
+
+## [0.21.0] - 2026-02-05
+
+### Added
+- add scheduled cleanup for stale Action Scheduler claims with configurable max age (default 24h)
+
+## [0.20.5] - 2026-02-05
+
+### Fixed
+- Only check scheduled cleanup jobs in admin context
+
+## [0.20.4] - 2026-02-04
+
+### Fixed
+- allow Action Scheduler queue runs to pass ability permission checks
+
+## [0.20.3] - 2026-02-04
+
+### Added
+- re-queue prompt on job failure
+
+### Fixed
+- only clear backup on successful re-queue, fix WPCS indentation
+
+## [0.20.2] - 2026-02-04
+
+### Changed
+- Remove --allow-root from examples, add note about root usage
+- Add Data Machine agent skill in OpenClaw format
+
+### Fixed
+- handle WP_Error from ability execution
+
+## [0.20.1] - 2026-02-03
+
+### Added
+- wire alt_text_auto_generate_enabled to SettingsAbilities
+- Add toggle for alt text auto-generation on upload
+
+## [0.20.0] - 2026-02-03
+
+### Added
+- centralize term resolution with datamachine/resolve-term ability
+- system agent alt text generation with scheduled processing
+- flows delete and flows update CLI subcommands
+- auto-apply site handler defaults to unconfigured flow steps
+
+### Fixed
+- site-wide handler defaults not applied in handler details API endpoint
+- alt-text scheduling gated on provider/model config
+- taxonomy resolution null guard and Abilities API alignment
+
+## [0.19.16] - 2026-02-03
+
+### Added
+- auto-resolve queueable step when --step omitted
+
+### Fixed
+- store failure reasons in job status using compound format
+- correct timezone for next_run display
+
+## [0.19.15] - 2026-02-03
+
+### Fixed
+- normalize shorthand flow scheduling intervals before validation
+
+## [0.19.13] - 2026-02-03
+
+### Changed
+- Clarify Agent Ping outbound-only loop patterns and REST triggers in docs
+- Align cache management and direct execution sentinel docs; drop stale cache endpoint example
+
+## [0.19.12] - 2026-02-02
+
+### Changed
+- **BREAKING**: Replaced `enabled_tools` with `disabled_tools` in AI step configuration
+  - Empty array now means "use all globally enabled tools" (no exclusions)
+  - Non-empty array explicitly excludes those tools from the step
+  - **Behavior change**: Steps with old `enabled_tools` config will now have access to ALL globally-enabled tools (old config is ignored, not migrated)
+- Tool enablement logic: `Available = Globally enabled − Step disabled`
+
+### Fixed
+- Tool enablement bug where empty `enabled_tools` array disabled all tools instead of using defaults
+
+## [0.19.11] - 2026-02-02
+
+### Added
+- add Agent Ping auth header fields to the pipeline builder UI
+
+### Fixed
+- default handler_slug to step_type for non-handler steps when saving handler_config
+
+## [0.19.10] - 2026-02-02
+
+### Added
+- add optional auth header settings for Agent Ping webhooks
+
+### Changed
+- include optional auth header in Agent Ping webhook requests
+
+## [0.19.9] - 2026-02-02
+
+### Changed
+- Merge pull request #69 from saraichinwag/fix/engine-step-failure-detection
+- Merge pull request #68 from saraichinwag/fix/agent-ping-flow-id
+
+### Fixed
+- detect step failure from packet metadata
+- fix(agent-ping): get flow_id/pipeline_id from flow_step_config
+
+## [0.19.8] - 2026-02-02
+
+### Added
+- feat(agent-ping): add url_list field type with + button UI
+- feat(agent-ping): support multiple webhook URLs
+
+### Changed
+- Merge pull request #67 from saraichinwag/feature/agent-ping-multi-url
+
+### Fixed
+- fix(url-list): use CSS classes and add sanitization
+
+## [0.19.7] - 2026-02-02
+
+### Changed
+- Merge pull request #66 from Extra-Chill/fix/agent-ping-settings-display
+
+### Fixed
+- suppress step settings display when configured
+
+## [0.19.6] - 2026-02-02
+
+### Changed
+- Merge pull request #64 from saraichinwag/fix/cli-pipeline-config-flag
+- Merge pull request #65 from saraichinwag/fix/cli-step-parameter
+
+### Fixed
+- return updated_fields from executeUpdatePipelineStep
+- add wp_unslash, is_array guards, restore JSON output
+- add missing --step parameter declaration for queue commands
+- implement --config flag for pipeline update command
+
+## [0.19.5] - 2026-02-02
+
+### Added
+- add move command and step-level CLI support
+- scope prompt queue per flow step
+
+### Changed
+- Merge pull request #61 from saraichinwag/docs/agent-orchestration
+- Merge pull request #62 from saraichinwag/feat/queue-management
+- Merge pull request #63 from Extra-Chill/feat/step-queue-inline-agent-ping
+
+### Fixed
+- keep queue enabled state when clearing
+
+## [0.19.4] - 2026-02-02
+
+### Added
+- add PromptField component and Agent Ping configuration
+
+### Changed
+- Merge pull request #58 from saraichinwag/feat/promptfield-agent-ping-config
+- Merge pull request #57 from saraichinwag/fix/ghost-step-filter
+- Merge pull request #56 from saraichinwag/fix/tools-display-sync
+
+### Fixed
+- remove Agent Ping from API client (AI-only)
+- remove pipeline-level Agent Ping UI/API/display
+- revert to handler_config, set hasPipelineConfig false
+- align Agent Ping config source of truth to pipeline_config
+- wire WebhookUrlField, dedupe URL validation, remove dead state
+- filter ghost steps without step_type from pipeline display
+- sync tools display with global settings - correct logic
+
+## [0.19.3] - 2026-02-02
+
+### Changed
+- Merge pull request #55 from saraichinwag/fix/agent-ping-wp-error-handling
+
+### Fixed
+- fix(agent-ping): handle WP_Error from ability execution
+
+## [0.19.2] - 2026-02-02
+
+### Changed
+- Merge pull request #54 from saraichinwag/fix/engine-all-method
+
+### Fixed
+- fix(agent-ping): use engine->all() not getAll()
+
+## [0.19.1] - 2026-02-02
+
+### Fixed
+- Align release metadata after the 0.19.0 tag
+
+## [0.19.0] - 2026-02-02
+
+### Added
+- QueueableTrait for shared queue pop functionality across step types
+- Agent Ping step now supports prompt queue (same as AI step)
+
+### Changed
+- AIStep refactored to use QueueableTrait instead of inline queue logic
+- Agent Ping includes `from_queue` flag in webhook payload
+
+## [0.18.6] - 2026-02-01
+
+### Changed
+- Merge pull request #52 from saraichinwag/fix/restore-prompt-field
+
+### Fixed
+- use addToQueue when queue is empty
+- restore prompt field alongside queue modal button
+
+## [0.18.5] - 2026-02-01
+
+### Changed
+- Merge pull request #51 from saraichinwag/fix/queue-modal-from-step
+- Merge pull request #50 from saraichinwag/fix/remove-footer-queue
+
+### Fixed
+- open queue modal from step card button
+- remove queue button from flow footer
+
+## [0.18.4] - 2026-02-01
+
+### Changed
+- Hide handler badge for non-handler steps
+- Allow adding prompt to queue when empty
+
+## [0.18.3] - 2026-02-01
+
+### Changed
+- Document agent self-orchestration in README and overview
+- Extend Agent Ping payload with engine_data context
+
+## [0.18.2] - 2026-02-01
+
+### Changed
+- Document AI agent integration in new SKILL.md
+- Hide Configure button for non-handler steps while keeping settings display
+
+## [0.18.1] - 2026-02-01
+
+### Changed
+- Remove deprecated CLI agent command (#37)
+
+### Fixed
+- fix(agent-ping): use flow-level handler_config via abilities pattern (#38)
+- fix(agent-ping): use flow-level handler_config instead of pipeline config (#36)
+- engine data access bugs in AI step and queue (#35)
+
+## [0.18.0] - 2026-02-01
+
+### Added
+- add CLI CRUD commands for pipelines (#33)
+
+### Changed
+- modularize abilities files for maintainability (#34)
+
+## [0.17.0] - 2026-02-01
+
+### Added
+- add React UI for prompt queue management (#30)
+
+### Fixed
+- initialize queue before WP_Ability check for CLI compatibility (#28)
+
+## [0.16.3] - 2026-02-01
+
+### Added
+- Prompt Queue for AI Flows (#27)
+
+## [0.16.2] - 2026-02-01
+
+- Bump ai-http-client to v2.0.13
+
+## [0.16.1] - 2026-01-30
+
+### Fixed
+- Update DirectoryManager type hints to support direct execution mode (int|string for pipeline/flow IDs)
+
+## [0.16.0] - 2026-01-30
+
+### Changed
+- Migrate all file operations to WordPress WP_Filesystem API for Plugin Check compliance
+- Add centralized FilesystemHelper for filesystem initialization
+- Remove forbidden fallback pattern in RemoteFileDownloader
+- Modularize FlowAbilities and FlowStepAbilities into focused ability classes with shared helper traits
+- Add explicit selection modes to configure_flow_steps: flow_step_ids array, global handler scope, all_flows opt-in
+
+### Fixed
+- Fix configure_flow_steps bulk mode to require explicit opt-in (prevents accidental pipeline-wide updates)
+
+## [0.15.2] - 2026-01-28
+
+### Changed
+- Improve create_pipeline UX for AI agents
+- Update documentation for clarity and accuracy
+
+### Fixed
+- Fix array alignment per WordPress coding standards
+- Fix system prompt not appearing in Configure Step modal
+- Fix taxonomy selection mismatch between card and modal
+- Fix React/API synchronization for step creation and chat invalidation
+- Fix chat timestamps incorrectly showing "just now"
+- Fix chat loading state bleeding across sessions
+
+## [0.15.1] - 2026-01-28
+
+- Add BaseCommand class with standard WP-CLI format options (table, json, csv, yaml, ids, count)
+- Fix type safety and code quality issues across codebase
+
+## [0.15.0] - 2026-01-27
+
+### Changed
+- Add async turn-by-turn chat execution
+- Add bulk mode to pipeline and flow creation abilities
+- improved error handling for chat tools
+- Remove PHPUnit from composer dependencies
+- Update @wordpress/scripts to fix lodash vulnerabilities
+
+## [0.14.12] - 2026-01-27
+
+### Fixed
+- Fix flows run CLI subcommand argument parsing
+
+## [0.14.11] - 2026-01-27
+
+### Changed
+- Remove orphaned ToolRegistrationTrait require
+
+### Fixed
+- Complete truncated test function
+
+## [0.14.10] - 2026-01-27
+
+### Changed
+- Unified BaseTool architecture for all AI tools
+
+## [0.14.9] - 2026-01-27
+
+### Fixed
+- Add ChatToolErrorTrait for consistent WP_Error handling in chat tools with error_type classification to prevent AI infinite retry loops
+
+## [0.14.8] - 2026-01-26
+
+### Changed
+- expand jobs.status column to varchar(255) for compound statuses with reasons
+
+## [0.14.7] - 2026-01-26
+
+### Added
+- Add 'flows run' CLI subcommand for immediate/scheduled flow execution (#13)
+
+## [0.14.6] - 2026-01-26
+
+### Changed
+- add stuck job recovery feature with abilities-first architecture
+- made sure default model assigned to new pipeline ai steps (based on global settings)
+
+## [0.14.5] - 2026-01-26
+
+### Changed
+- Add unified system health check ability with filter-based registration
+
+## [0.14.4] - 2026-01-26
+
+### Changed
+- Add current_date to SiteContext for AI date awareness
+
+## [0.14.3] - 2026-01-26
+
+- Add dry-run support to base PublishHandler class for all publish handlers
+
+## [0.14.2] - 2026-01-25
+
+### Removed
+- Delete deprecated SessionTitleGenerator.php (superseded by SystemAbilities)
+
+### Fixed
+- Move chat session title generation after database persistence to fix stale data issue (#7)
+
+## [0.14.1] - 2026-01-25
+
+### Fixed
+- Fix WordPress Abilities API usage - use wp_get_ability()->execute() instead of non-existent wp_execute_ability()
+- Fix malformed .gitignore entry that prevented build directory from being ignored
+- Clean up duplicate version targets in homeboy configuration for reliable version bumping
+
+## [0.14.0] - 2026-01-25
+
+- Added System Agent Architecture - Hook-based system for infrastructure operations with automatic chat session title generation
+
+## [0.13.6] - 2026-01-25
+
+### Fixed
+- Fix pipeline step deletion to sync flows and clean processed items
+
+## [0.13.5] - 2026-01-24
+
+### Fixed
+- Fix WP Abilities API late registration warnings causing 'category string' notices in WP-CLI commands
+
+## [0.13.4] - 2026-01-24
+
+### Changed
+- Restructure documentation from api-reference to development/hooks directory
+
+### Fixed
+- Fix undefined variable warnings in chat tools by adding missing self:: prefix to static property references
+
+## [0.13.3] - 2026-01-24
+
+- Fix uninitialized property errors by initializing instance properties before static registration guard
+
+## [0.13.2] - 2026-01-24
+
+- Remove duplicate datamachine ability category registration
+
+## [0.13.1] - 2026-01-24
+
+- Fix duplicate ability registrations during WP-CLI execution by adding static registration guards to all 14 ability classes
+
+## [0.13.0] - 2026-01-22
+
+- BREAKING: Consolidate singular/plural abilities - remove 7 redundant singular abilities (get-flow, get-job, get-pipeline, get-pipeline-step, get-flow-step, get-handler, get-step-type) in favor of plural abilities with optional ID parameters for single lookups
+
+## [0.12.5] - 2026-01-22
+
+- fix: Correct undefined variable references in DateFormatter static methods
+- test: Add DateFormatterTest for comprehensive coverage
+
+## [0.12.4] - 2026-01-20
+
+### Added
+- ToolExecutor now validates required parameters before execution with clear error messages
+- LocalSearchAbilities class for WordPress 6.9 Abilities API
+
+### Changed
+- LocalSearch tool now delegates to LocalSearchAbilities (Abilities API integration)
+
+### Fixed
+- Log clearing functions renamed for clarity (datamachine_clear_log_files to datamachine_clear_all_log_files, datamachine_clear_log_file for single agent)
+
+## [0.12.3] - 2026-01-20
+
+- Fix React admin pages blank due to const vs window. declaration mismatch
+
+## [0.12.2] - 2026-01-20
+
+- Fixed regex pattern in admin asset enqueue - now correctly matches WordPress hook suffix format for all admin pages
+
+## [0.12.1] - 2026-01-20
+
+### Fixed
+- Resolved blank React admin pages after Abilities API migration by refactoring asset enqueueing to use direct slug extraction instead of options storage
+
+## [0.12.0] - 2026-01-20
+
+### Added
+- WordPress 6.9 Abilities API integration with 64 registered abilities across 13 ability classes
+- PipelineAbilities with 8 abilities for pipeline CRUD and import/export operations
+- PipelineStepAbilities with 6 abilities for step management
+- FlowAbilities with 6 abilities for flow CRUD and duplication
+- FlowStepAbilities with 4 abilities for flow step configuration
+- JobAbilities with 6 abilities for execution, health monitoring, and problem flow detection
+- FileAbilities with 5 abilities for file management and uploads
+- ProcessedItemsAbilities with 3 abilities for deduplication tracking
+- SettingsAbilities with 7 abilities for plugin and handler settings
+- AuthAbilities with 3 abilities for OAuth authentication management
+- LogAbilities with 6 abilities for logging operations
+- HandlerAbilities with 6 abilities for handler discovery and configuration
+- StepTypeAbilities with 3 abilities for step type discovery and validation
+- PostQueryAbilities with unified query-posts ability supporting handler/flow/pipeline filters
+
+### Changed
+- Minimum WordPress requirement bumped to 6.9 for Abilities API support
+- REST API endpoints now delegate to Abilities for all business logic
+- CLI commands execute Abilities directly for consistent behavior
+- Chat tools delegate to Abilities for all mutation operations
+- Cache invalidation moved from CacheManager to individual ability classes
+
+### Removed
+- Services layer deleted - HandlerService, StepTypeService, PipelineManager, PipelineStepManager, FlowManager, FlowStepManager, ProcessedItemsManager, JobManager, AuthProviderService, LogsManager, CacheManager (~3000 lines removed)
+
+## [0.11.6] - 2026-01-19
+
+- Fixed Yoda fixer breaking null comparisons (self::null -> null)
+
+## [0.11.5] - 2026-01-19
+
+- Added PostTrackingTrait for upsert operations
+- Linter and documentation fixes
+- Test infrastructure now handled by Homeboy
+
+## [0.11.4] - 2026-01-18
+
+- Fixed: DATAMACHINE_VERSION constant now matches plugin header version (0.11.3)
+
+## [0.11.3] - 2026-01-17
+
+- {"component_id":"data-machine","type":"Removed","summary":"Removed unused post_date_source setting"}
+
+## [0.11.3] - 2026-01-17
+
+- {"component_id":"data-machine","type":"Removed","summary":"Removed unused post_date_source setting"}
+
+## [0.11.2] - 2026-01-16
+
+- Fixed: Chat session deduplication now catches sessions with status=processing in metadata, preventing duplicate sessions on Cloudflare timeout
+- Changed: Updated ai-http-client to 2.0.12 for improved invalid JSON response handling
+
+## [0.11.1] - 2026-01-16
+
+- Fixed: Pass explicit agent_type in chat session creation and API queries to fix session listing and creation errors
+
+## [0.11.0] - 2026-01-15
+
+- Add WP-CLI agent command for chat interactions.
+- Chat sessions table now records agent_type for chat and CLI sessions.
+
+## [0.10.3] - 2026-01-15
+
+- Docs: clarify direct execution cycle and WP-CLI agent usage.
+- Docs: expand wp-ai-client migration blocker details for handler tools.
 
 ## [0.10.2] - 2026-01-08
 
@@ -596,7 +2689,7 @@ This release marks a new era of Data Machine with systematic flow monitoring and
 
 ### Removed
 - **Legacy Logs Assets** - Deleted legacy `admin-logs.js` and associated PHP template logic.
-- **Step Filter Classes** - Removed `AIStepFilters`, `FetchStepFilters`, `PublishStepFilters`, and `UpdateStepFilters`.
+- **Step Filter Classes** - Removed `AIStepFilters`, `FetchStepFilters`, `PublishStepFilters`, and `UpsertStepFilters`.
 
 ## [0.7.1] - 2026-01-02
 
@@ -1018,7 +3111,7 @@ This release marks a new era of Data Machine with systematic flow monitoring and
 
 ### Changed
 - **Function Naming**: Standardized function names in main plugin file (datamachine_run_datamachine_plugin, datamachine_activate_plugin_defaults)
-- **Documentation**: Updated AGENTS.md to reflect ConfigureFlowSteps tool improvements
+- **Documentation**: Updated CLAUDE.md to reflect ConfigureFlowSteps tool improvements
 - **Admin Interface**: Settings page refinements and UI component updates for better user experience
 
 ### Technical Details

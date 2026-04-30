@@ -11,33 +11,38 @@
 
 namespace DataMachine\Api\Chat\Tools;
 
-use DataMachine\Engine\AI\Tools\ToolRegistrationTrait;
-use DataMachine\Services\StepTypeService;
-
-if (!defined('ABSPATH')) {
-    exit;
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
 }
 
-class ExecuteWorkflowTool {
-    use ToolRegistrationTrait;
+use DataMachine\Engine\AI\Tools\BaseTool;
 
-    public function __construct() {
-        $this->registerTool('chat', 'execute_workflow', [$this, 'getToolDefinition']);
-    }
+class ExecuteWorkflowTool extends BaseTool {
 
-    /**
-     * Get tool definition.
-     * Called lazily when tool is first accessed to ensure translations are loaded.
-     *
-     * @return array Tool definition array
-     */
-    public function getToolDefinition(): array {
-        $step_type_service = new StepTypeService();
-        $step_types = $step_type_service->getAll();
-        $type_slugs = !empty($step_types) ? array_keys($step_types) : ['fetch', 'ai', 'publish', 'update'];
-        $types_list = implode('|', $type_slugs);
+	public function __construct() {
+		$this->registerTool( 'execute_workflow', array( $this, 'getToolDefinition' ), array( 'chat' ), array( 'ability' => 'datamachine/execute-workflow' ) );
+	}
 
-        $description = 'Execute an ephemeral workflow (not saved to database).
+	/**
+	 * Get tool definition.
+	 * Called lazily when tool is first accessed to ensure translations are loaded.
+	 *
+	 * @return array Tool definition array
+	 */
+	public function getToolDefinition(): array {
+		$step_types_ability = wp_get_ability( 'datamachine/get-step-types' );
+		$type_slugs         = array( 'fetch', 'ai', 'publish', 'upsert' );
+
+		if ( $step_types_ability ) {
+			$result = $step_types_ability->execute( array() );
+			if ( ! is_wp_error( $result ) && ! empty( $result['success'] ) && ! empty( $result['step_types'] ) ) {
+				$type_slugs = array_keys( $result['step_types'] );
+			}
+		}
+
+		$types_list = implode( '|', $type_slugs );
+
+		$description = 'Execute an ephemeral workflow (not saved to database).
 
 STEP FORMAT: {type: "' . $types_list . '", handler_slug, handler_config, user_message?, system_prompt?}
 
@@ -50,78 +55,92 @@ EXAMPLE:
   {"type": "publish", "handler_slug": "wordpress_publish", "handler_config": {"post_type": "post"}}
 ]';
 
-        return [
-            'class' => self::class,
-            'method' => 'handle_tool_call',
-            'description' => $description,
-            'parameters' => [
-                'steps' => [
-                    'type' => 'array',
-                    'required' => true,
-                    'description' => 'Step objects: {type, handler_slug, handler_config}. AI steps: {type: "ai", user_message}.'
-                ]
-            ]
-        ];
-    }
+		return array(
+			'class'       => self::class,
+			'method'      => 'handle_tool_call',
+			'description' => $description,
+			'parameters'  => array(
+				'steps'   => array(
+					'type'        => 'array',
+					'required'    => true,
+					'description' => 'Step objects: {type, handler_slug, handler_config}. AI steps: {type: "ai", user_message}.',
+				),
+				'dry_run' => array(
+					'type'        => 'boolean',
+					'required'    => false,
+					'description' => 'Preview execution without creating posts. Returns what would be published instead of actually publishing.',
+				),
+			),
+		);
+	}
 
-    /**
-     * Execute the workflow.
-     *
-     * @param array $parameters Tool parameters containing steps
-     * @param array $tool_def Tool definition (unused)
-     * @return array Execution result
-     */
-    public function handle_tool_call(array $parameters, array $tool_def = []): array {
-        $steps = $parameters['steps'] ?? [];
+	/**
+	 * Execute the workflow.
+	 *
+	 * @param array $parameters Tool parameters containing steps
+	 * @param array $tool_def Tool definition (unused)
+	 * @return array Execution result
+	 */
+	public function handle_tool_call( array $parameters, array $tool_def = array() ): array {
+		$steps   = $parameters['steps'] ?? array();
+		$dry_run = $parameters['dry_run'] ?? false;
 
-        if (empty($steps)) {
-            return [
-                'success' => false,
-                'error' => 'Workflow must contain at least one step',
-                'tool_name' => 'execute_workflow'
-            ];
-        }
+		if ( empty( $steps ) ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Workflow must contain at least one step',
+				'tool_name' => 'execute_workflow',
+			);
+		}
 
-        $request = new \WP_REST_Request('POST', '/datamachine/v1/execute');
-        $request->set_body_params([
-            'workflow' => ['steps' => $steps]
-        ]);
+		$ability = wp_get_ability( 'datamachine/execute-workflow' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Execute workflow ability not available',
+				'tool_name' => 'execute_workflow',
+			);
+		}
 
-        $response = rest_do_request($request);
-        $data = $response->get_data();
-        $status = $response->get_status();
+		$input = array(
+			'workflow' => array( 'steps' => $steps ),
+		);
 
-        if ($response->is_error()) {
-            $error = $response->as_error();
-            do_action('datamachine_log', 'error', 'ExecuteWorkflowTool: REST request failed', [
-                'error' => $error->get_error_message(),
-                'steps' => $steps
-            ]);
-            return [
-                'success' => false,
-                'error' => $error->get_error_message(),
-                'tool_name' => 'execute_workflow'
-            ];
-        }
+		if ( $dry_run ) {
+			$input['dry_run'] = true;
+		}
 
-        if ($status >= 400) {
-            $error_message = $data['message'] ?? 'Execution failed';
-            do_action('datamachine_log', 'error', 'ExecuteWorkflowTool: Execution failed', [
-                'status' => $status,
-                'error' => $error_message,
-                'data' => $data
-            ]);
-            return [
-                'success' => false,
-                'error' => $error_message,
-                'tool_name' => 'execute_workflow'
-            ];
-        }
+		$result = $ability->execute( $input );
 
-        return [
-            'success' => true,
-            'data' => $data,
-            'tool_name' => 'execute_workflow'
-        ];
-    }
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'execute_workflow',
+			);
+		}
+
+		if ( ! ( $result['success'] ?? false ) ) {
+			do_action(
+				'datamachine_log',
+				'error',
+				'ExecuteWorkflowTool: Execution failed',
+				array(
+					'error' => $result['error'] ?? 'Unknown error',
+					'steps' => $steps,
+				)
+			);
+			return array(
+				'success'   => false,
+				'error'     => $result['error'] ?? 'Execution failed',
+				'tool_name' => 'execute_workflow',
+			);
+		}
+
+		return array(
+			'success'   => true,
+			'data'      => $result,
+			'tool_name' => 'execute_workflow',
+		);
+	}
 }

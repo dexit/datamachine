@@ -3,23 +3,23 @@
  * Reorder Pipeline Steps Tool
  *
  * Focused tool for reordering steps within a pipeline.
+ * Delegates to Abilities API for core logic.
  *
  * @package DataMachine\Api\Chat\Tools
  */
 
 namespace DataMachine\Api\Chat\Tools;
 
-if (!defined('ABSPATH')) {
+if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-use DataMachine\Engine\AI\Tools\ToolRegistrationTrait;
+use DataMachine\Engine\AI\Tools\BaseTool;
 
-class ReorderPipelineSteps {
-	use ToolRegistrationTrait;
+class ReorderPipelineSteps extends BaseTool {
 
 	public function __construct() {
-		$this->registerTool('chat', 'reorder_pipeline_steps', [$this, 'getToolDefinition']);
+		$this->registerTool( 'reorder_pipeline_steps', array( $this, 'getToolDefinition' ), array( 'chat' ), array( 'ability' => 'datamachine/reorder-pipeline-steps' ) );
 	}
 
 	/**
@@ -28,23 +28,23 @@ class ReorderPipelineSteps {
 	 * @return array Tool definition array
 	 */
 	public function getToolDefinition(): array {
-		return [
-			'class' => self::class,
-			'method' => 'handle_tool_call',
+		return array(
+			'class'       => self::class,
+			'method'      => 'handle_tool_call',
 			'description' => 'Reorder steps within a pipeline.',
-			'parameters' => [
-				'pipeline_id' => [
-					'type' => 'integer',
-					'required' => true,
-					'description' => 'ID of the pipeline'
-				],
-				'step_order' => [
-					'type' => 'array',
-					'required' => true,
-					'description' => 'Array of step order objects: [{pipeline_step_id: "...", execution_order: 0}, ...]'
-				]
-			]
-		];
+			'parameters'  => array(
+				'pipeline_id' => array(
+					'type'        => 'integer',
+					'required'    => true,
+					'description' => 'ID of the pipeline',
+				),
+				'step_order'  => array(
+					'type'        => 'array',
+					'required'    => true,
+					'description' => 'Array of step order objects: [{pipeline_step_id: "...", execution_order: 0}, ...]',
+				),
+			),
+		);
 	}
 
 	/**
@@ -54,50 +54,30 @@ class ReorderPipelineSteps {
 	 * @param array $tool_def Tool definition
 	 * @return array Tool execution result
 	 */
-	public function handle_tool_call(array $parameters, array $tool_def = []): array {
-		$pipeline_id = $parameters['pipeline_id'] ?? null;
-		$step_order = $parameters['step_order'] ?? null;
+	public function handle_tool_call( array $parameters, array $tool_def = array() ): array {
+		$ability = wp_get_ability( 'datamachine/reorder-pipeline-steps' );
+		if ( ! $ability ) {
+			return array(
+				'success'   => false,
+				'error'     => 'Reorder pipeline steps ability not available',
+				'tool_name' => 'reorder_pipeline_steps',
+			);
+		}
+		$result = $ability->execute( $parameters );
 
-		if (!is_numeric($pipeline_id) || (int) $pipeline_id <= 0) {
-			return [
-				'success' => false,
-				'error' => 'pipeline_id is required and must be a positive integer',
-				'tool_name' => 'reorder_pipeline_steps'
-			];
+		if ( is_wp_error( $result ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $result->get_error_message(),
+				'tool_name' => 'reorder_pipeline_steps',
+			);
 		}
 
-		if (empty($step_order) || !is_array($step_order)) {
-			return [
-				'success' => false,
-				'error' => 'step_order is required and must be an array',
-				'tool_name' => 'reorder_pipeline_steps'
-			];
-		}
-
-		$pipeline_id = (int) $pipeline_id;
-
-		$request = new \WP_REST_Request('PUT', '/datamachine/v1/pipelines/' . $pipeline_id . '/steps/reorder');
-		$request->set_body_params(['step_order' => $step_order]);
-
-		$response = rest_do_request($request);
-		$data = $response->get_data();
-		$status = $response->get_status();
-
-		if ($status >= 400) {
-			return [
-				'success' => false,
-				'error' => $data['message'] ?? 'Failed to reorder pipeline steps',
-				'tool_name' => 'reorder_pipeline_steps'
-			];
-		}
-
-		return [
-			'success' => true,
-			'data' => [
-				'pipeline_id' => $pipeline_id,
-				'message' => 'Pipeline steps reordered.'
-			],
-			'tool_name' => 'reorder_pipeline_steps'
-		];
+		return array(
+			'success'   => $result['success'],
+			'data'      => $result['success'] ? $result : null,
+			'error'     => $result['error'] ?? null,
+			'tool_name' => 'reorder_pipeline_steps',
+		);
 	}
 }

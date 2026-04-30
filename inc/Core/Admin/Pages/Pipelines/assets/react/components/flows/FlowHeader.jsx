@@ -4,9 +4,15 @@
  * Flow title with auto-save and action buttons.
  */
 
+/**
+ * WordPress dependencies
+ */
 import { useState, useEffect, useCallback, useRef } from '@wordpress/element';
 import { TextControl, Button } from '@wordpress/components';
 import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
 import { useUpdateFlowTitle } from '../../queries/flows';
 import { AUTO_SAVE_DELAY } from '../../utils/constants';
 
@@ -20,8 +26,9 @@ import { AUTO_SAVE_DELAY } from '../../utils/constants';
  * @param {Function} props.onDelete     - Delete handler.
  * @param {Function} props.onDuplicate  - Duplicate handler.
  * @param {Function} props.onRun        - Run handler.
- * @param {Function} props.onSchedule   - Schedule handler.
- * @param {boolean}  props.runSuccess   - Whether run was just successful.
+ * @param {Function} props.onSchedule    - Schedule handler.
+ * @param {Function} props.onMemoryFiles - Memory files handler.
+ * @param {boolean}  props.runSuccess    - Whether run was just successful.
  * @return {JSX.Element} Flow header.
  */
 export default function FlowHeader( {
@@ -32,6 +39,7 @@ export default function FlowHeader( {
 	onDuplicate,
 	onRun,
 	onSchedule,
+	onMemoryFiles,
 	runSuccess = false,
 } ) {
 	const [ localName, setLocalName ] = useState( flowName );
@@ -97,7 +105,7 @@ export default function FlowHeader( {
 	const handleDelete = useCallback( () => {
 		// eslint-disable-next-line no-alert
 		const confirmed = window.confirm(
-			__( 'Are you sure you want to delete this flow?', 'datamachine' )
+			__( 'Are you sure you want to delete this flow?', 'data-machine' )
 		);
 
 		if ( confirmed && onDelete ) {
@@ -122,7 +130,7 @@ export default function FlowHeader( {
 				<TextControl
 					value={ localName }
 					onChange={ handleNameChange }
-					placeholder={ __( 'Flow name…', 'datamachine' ) }
+					placeholder={ __( 'Flow name…', 'data-machine' ) }
 					className="datamachine-flow-header__title-input"
 				/>
 
@@ -133,8 +141,8 @@ export default function FlowHeader( {
 						disabled={ runSuccess }
 					>
 						{ runSuccess
-							? __( 'Queued', 'datamachine' )
-							: __( 'Run Now', 'datamachine' ) }
+							? __( 'Queued', 'data-machine' )
+							: __( 'Run Now', 'data-machine' ) }
 					</Button>
 				</div>
 			</div>
@@ -144,14 +152,21 @@ export default function FlowHeader( {
 					variant="secondary"
 					onClick={ () => onSchedule && onSchedule( flowId ) }
 				>
-					{ __( 'Schedule', 'datamachine' ) }
+					{ __( 'Schedule', 'data-machine' ) }
+				</Button>
+
+				<Button
+					variant="secondary"
+					onClick={ () => onMemoryFiles && onMemoryFiles( flowId ) }
+				>
+					{ __( 'Memory', 'data-machine' ) }
 				</Button>
 
 				<Button
 					variant="secondary"
 					onClick={ () => onDuplicate && onDuplicate( flowId ) }
 				>
-					{ __( 'Duplicate', 'datamachine' ) }
+					{ __( 'Duplicate', 'data-machine' ) }
 				</Button>
 
 				<Button

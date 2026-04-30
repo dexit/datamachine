@@ -3,14 +3,15 @@
 .gitignore
 .github/
 .DS_Store
+**/.DS_Store
 *.log
 .eslintrc.js
+**/.eslintrc.js
 
-# Build system (exclude build files but not the final product)
+# Build system
 build.sh
 .buildignore
-node_modules/**/build/
-/build/
+/.homeboy-build/
 
 # Testing
 tests/

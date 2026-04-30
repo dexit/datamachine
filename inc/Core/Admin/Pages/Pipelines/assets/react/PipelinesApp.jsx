@@ -5,26 +5,39 @@
  * @pattern Container - Fetches all pipeline-related data and manages global state
  */
 
+/**
+ * WordPress dependencies
+ */
 import { useEffect, useCallback, useState, useMemo } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 import { Spinner, Notice, Button } from '@wordpress/components';
-import { usePipelines, useCreatePipeline } from './queries/pipelines';
-import { useFlows, useUpdateFlowHandler } from './queries/flows';
+/**
+ * Internal dependencies
+ */
+import {
+	usePipelines,
+	usePipeline,
+	useCreatePipeline,
+} from './queries/pipelines';
+import { useFlows } from './queries/flows';
+/**
+ * External dependencies
+ */
 import { useSettings } from '@shared/queries/settings';
-import { useHandlers, useHandlerDetails } from './queries/handlers';
 import { useUIStore } from './stores/uiStore';
 import PipelineCard from './components/pipelines/PipelineCard';
 import PipelineSelector from './components/pipelines/PipelineSelector';
 import ModalManager from './components/shared/ModalManager';
 import ChatToggle from './components/chat/ChatToggle';
 import ChatSidebar from './components/chat/ChatSidebar';
+import AgentSwitcher from '@shared/components/AgentSwitcher';
 import { MODAL_TYPES } from './utils/constants';
 import { isSameId } from './utils/ids';
 
 /**
  * Root application component
  *
- * @returns {React.ReactElement} Application component
+ * @return {React.ReactElement} Application component
  */
 export default function PipelinesApp() {
 	// UI state from Zustand
@@ -32,9 +45,6 @@ export default function PipelinesApp() {
 		selectedPipelineId,
 		setSelectedPipelineId,
 		openModal,
-		closeModal,
-		activeModal,
-		modalData,
 		isChatOpen,
 	} = useUIStore();
 
@@ -50,87 +60,59 @@ export default function PipelinesApp() {
 	}, [ selectedPipelineId ] );
 
 	// Data from TanStack Query
-	const { data: pipelines = [], isLoading: pipelinesLoading, error: pipelinesError } = usePipelines();
+	const {
+		data: pipelines = [],
+		isLoading: pipelinesLoading,
+		error: pipelinesError,
+	} = usePipelines();
 	const { data: settingsData } = useSettings();
 	const flowsPerPage = settingsData?.settings?.flows_per_page ?? 20;
 
-	const { data: flowsData, isLoading: flowsLoading, error: flowsError } = useFlows(
-		selectedPipelineId,
-		{ page: flowsPage, perPage: flowsPerPage }
-	);
+	const {
+		data: flowsData,
+		isLoading: flowsLoading,
+		error: flowsError,
+	} = useFlows( selectedPipelineId, {
+		page: flowsPage,
+		perPage: flowsPerPage,
+	} );
 	const flows = useMemo( () => flowsData?.flows ?? [], [ flowsData ] );
 	const flowsTotal = flowsData?.total ?? 0;
 
-	const { data: handlers = {} } = useHandlers();
-
-	// Fetch handler details for settings modal (skip if already seeded in modalData)
-	const handlerSlug = activeModal === MODAL_TYPES.HANDLER_SETTINGS && !modalData?.handlerDetails ? modalData?.handlerSlug : null;
-	const { data: handlerDetails } = useHandlerDetails(handlerSlug);
-	const createPipelineMutation = useCreatePipeline({
-		onSuccess: (pipelineId) => {
-			setSelectedPipelineId(pipelineId);
+	const createPipelineMutation = useCreatePipeline( {
+		onSuccess: ( pipelineId ) => {
+			setSelectedPipelineId( pipelineId );
 		},
-	});
-	const updateHandlerMutation = useUpdateFlowHandler();
+	} );
 
-	// Find selected pipeline from pipelines array
-	const selectedPipeline = pipelines?.find((p) => isSameId(p.pipeline_id, selectedPipelineId));
-	const selectedPipelineLoading = false; // No separate loading for selected pipeline
-	const selectedPipelineError = null; // No separate error for selected pipeline
+	// Resolve the selected pipeline: prefer the list cache, fall back to a
+	// single-pipeline fetch so the admin page works even when the selection
+	// isn't in the current selector search results (or the list is paginated).
+	const selectedFromList = pipelines?.find( ( p ) =>
+		isSameId( p.pipeline_id, selectedPipelineId )
+	);
+	const {
+		data: fetchedSelectedPipeline,
+		isLoading: fetchedSelectedLoading,
+		error: fetchedSelectedError,
+	} = usePipeline(
+		selectedPipelineId && ! selectedFromList ? selectedPipelineId : null
+	);
+	const selectedPipeline = selectedFromList || fetchedSelectedPipeline;
+	const selectedPipelineLoading =
+		selectedPipelineId && ! selectedFromList && fetchedSelectedLoading;
+	const selectedPipelineError = fetchedSelectedError;
 
 	const [ isCreatingPipeline, setIsCreatingPipeline ] = useState( false );
 
 	/**
-	 * Modal callback handlers
-	 */
-	const handleModalSuccess = useCallback( () => {
-		closeModal();
-	}, [ closeModal ] );
-
-	const handleHandlerSelected = useCallback( async ( selectedHandlerSlug ) => {
-		// First persist handler selection to flow step
-		const result = await updateHandlerMutation.mutateAsync({
-			flowStepId: modalData.flowStepId,
-			handlerSlug: selectedHandlerSlug,
-			settings: {},
-			pipelineId: modalData.pipelineId,
-			stepType: modalData.stepType,
-		});
-
-		if ( ! result || ! result.success ) {
-			const message = result?.message || 'Failed to assign handler to this flow step.';
-			throw new Error( message );
-		}
-
-		// On success, open handler settings modal with updated config
-		openModal( MODAL_TYPES.HANDLER_SETTINGS, {
-			...modalData,
-			handlerSlug: selectedHandlerSlug,
-			currentSettings: result?.data?.step_config?.handler_config || {},
-			// Don't seed handlerDetails - let the hook fetch the complete details to ensure we have the settings schema
-			// handlerDetails: result?.data?.handler_settings_display ?? null,
-		});
-	}, [ openModal, modalData, updateHandlerMutation ] );
-
-	const handleChangeHandler = useCallback( () => {
-		openModal( MODAL_TYPES.HANDLER_SELECTION, modalData );
-	}, [ openModal, modalData ] );
-
-	const handleOAuthConnect = useCallback( ( handlerSlug, handlerInfo ) => {
-		openModal( MODAL_TYPES.OAUTH, {
-			...modalData,
-			handlerSlug,
-			handlerInfo,
-		} );
-	}, [ openModal, modalData ] );
-
-	const handleBackToSettings = useCallback( () => {
-		openModal( MODAL_TYPES.HANDLER_SETTINGS, modalData );
-	}, [ openModal, modalData ] );
-
-	/**
 	 * Set selected pipeline when pipelines load or when selected pipeline is deleted.
 	 * Waits for Zustand hydration AND pipelines query to complete before applying default selection.
+	 *
+	 * The selection is only cleared when the pipeline is confirmed to not exist
+	 * anywhere — not just missing from the paginated list. This lets the admin
+	 * hold a selection beyond the first page of pipelines without it getting
+	 * auto-reset on every reload.
 	 */
 	useEffect( () => {
 		if ( ! hasHydrated || pipelinesLoading ) {
@@ -139,17 +121,39 @@ export default function PipelinesApp() {
 
 		if ( pipelines.length > 0 && ! selectedPipelineId ) {
 			setSelectedPipelineId( pipelines[ 0 ].pipeline_id );
-		} else if ( pipelines.length > 0 && selectedPipelineId ) {
-			// Check if selected pipeline still exists, if not, select next available
-			const selectedPipelineExists = pipelines.some((p) => isSameId(p.pipeline_id, selectedPipelineId));
-			if ( ! selectedPipelineExists ) {
-				setSelectedPipelineId( pipelines[ 0 ].pipeline_id );
-			}
-		} else if ( pipelines.length === 0 ) {
-			// No pipelines available
+			return;
+		}
+
+		if ( pipelines.length === 0 && ! selectedPipelineId ) {
+			return;
+		}
+
+		// Selection confirmed to exist if it's either in the list cache or
+		// the single-pipeline fetch resolved to a record.
+		const existsInList = pipelines.some( ( p ) =>
+			isSameId( p.pipeline_id, selectedPipelineId )
+		);
+		const existsOnServer = !! fetchedSelectedPipeline;
+
+		if ( existsInList || existsOnServer || fetchedSelectedLoading ) {
+			return;
+		}
+
+		// Only reach here once the single-pipeline fetch has resolved to null.
+		if ( pipelines.length > 0 ) {
+			setSelectedPipelineId( pipelines[ 0 ].pipeline_id );
+		} else {
 			setSelectedPipelineId( null );
 		}
-	}, [ pipelines, selectedPipelineId, setSelectedPipelineId, hasHydrated, pipelinesLoading ] );
+	}, [
+		pipelines,
+		selectedPipelineId,
+		setSelectedPipelineId,
+		hasHydrated,
+		pipelinesLoading,
+		fetchedSelectedPipeline,
+		fetchedSelectedLoading,
+	] );
 
 	/**
 	 * Handle creating a new pipeline
@@ -157,7 +161,7 @@ export default function PipelinesApp() {
 	const handleAddNewPipeline = useCallback( async () => {
 		setIsCreatingPipeline( true );
 		try {
-			await createPipelineMutation.mutateAsync('New Pipeline');
+			await createPipelineMutation.mutateAsync( 'New Pipeline' );
 		} catch ( error ) {
 			// eslint-disable-next-line no-console
 			console.error( 'Error creating pipeline:', error );
@@ -180,7 +184,7 @@ export default function PipelinesApp() {
 			return (
 				<div className="datamachine-pipelines-loading">
 					<Spinner />
-					<p>{ __( 'Loading pipelines...', 'datamachine' ) }</p>
+					<p>{ __( 'Loading pipelines…', 'data-machine' ) }</p>
 				</div>
 			);
 		}
@@ -189,7 +193,11 @@ export default function PipelinesApp() {
 		if ( pipelinesError || selectedPipelineError || flowsError ) {
 			return (
 				<Notice status="error" isDismissible={ false }>
-					<p>{ pipelinesError || selectedPipelineError || flowsError }</p>
+					<p>
+						{ pipelinesError ||
+							selectedPipelineError ||
+							flowsError }
+					</p>
 				</Notice>
 			);
 		}
@@ -202,7 +210,7 @@ export default function PipelinesApp() {
 						<p>
 							{ __(
 								'No pipelines found. Create your first pipeline to get started, or ask the chat to help you build one.',
-								'datamachine'
+								'data-machine'
 							) }
 						</p>
 					</Notice>
@@ -213,7 +221,7 @@ export default function PipelinesApp() {
 							disabled={ isCreatingPipeline }
 							isBusy={ isCreatingPipeline }
 						>
-							{ __( 'Create First Pipeline', 'datamachine' ) }
+							{ __( 'Create First Pipeline', 'data-machine' ) }
 						</Button>
 					</div>
 				</div>
@@ -225,7 +233,7 @@ export default function PipelinesApp() {
 			return (
 				<div className="datamachine-pipelines-loading">
 					<Spinner />
-					<p>{ __( 'Loading pipeline details...', 'datamachine' ) }</p>
+					<p>{ __( 'Loading pipeline details…', 'data-machine' ) }</p>
 				</div>
 			);
 		}
@@ -244,18 +252,7 @@ export default function PipelinesApp() {
 					onFlowsPageChange={ setFlowsPage }
 				/>
 
-				<ModalManager
-					pipelines={ pipelines }
-					handlers={ handlers }
-					handlerDetails={ handlerDetails }
-					pipelineConfig={ selectedPipeline?.pipeline_config || {} }
-					flows={ flows }
-					onModalSuccess={ handleModalSuccess }
-					onHandlerSelected={ handleHandlerSelected }
-					onChangeHandler={ handleChangeHandler }
-					onOAuthConnect={ handleOAuthConnect }
-					onBackToSettings={ handleBackToSettings }
-				/>
+				<ModalManager />
 			</>
 		);
 	};
@@ -274,14 +271,17 @@ export default function PipelinesApp() {
 						disabled={ isCreatingPipeline }
 						isBusy={ isCreatingPipeline }
 					>
-						{ __( 'Add New Pipeline', 'datamachine' ) }
+						{ __( 'Add New Pipeline', 'data-machine' ) }
 					</Button>
 					<div className="datamachine-header__right">
+						<AgentSwitcher />
 						<Button
 							variant="secondary"
-							onClick={ () => openModal( MODAL_TYPES.IMPORT_EXPORT ) }
+							onClick={ () =>
+								openModal( MODAL_TYPES.IMPORT_EXPORT )
+							}
 						>
-							{ __( 'Import / Export', 'datamachine' ) }
+							{ __( 'Import / Export', 'data-machine' ) }
 						</Button>
 						<ChatToggle />
 					</div>

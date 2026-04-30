@@ -67,3 +67,6 @@ plan.md
 
 # Docs tooling
 docs/.docs-sync.json
+
+# Build artifacts
+build/

@@ -4,6 +4,9 @@
  * TanStack Query hooks for handler defaults API operations.
  */
 
+/**
+ * External dependencies
+ */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { client } from '@shared/utils/api';
 
@@ -21,7 +24,9 @@ export const useHandlerDefaults = () => {
 		queryFn: async () => {
 			const response = await client.get( '/settings/handler-defaults' );
 			if ( ! response.success ) {
-				throw new Error( response.message || 'Failed to fetch handler defaults' );
+				throw new Error(
+					response.message || 'Failed to fetch handler defaults'
+				);
 			}
 			return response.data;
 		},
@@ -41,7 +46,9 @@ export const useUpdateHandlerDefaults = () => {
 				{ defaults }
 			);
 			if ( ! response.success ) {
-				throw new Error( response.message || 'Failed to update handler defaults' );
+				throw new Error(
+					response.message || 'Failed to update handler defaults'
+				);
 			}
 			return response.data;
 		},

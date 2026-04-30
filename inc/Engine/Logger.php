@@ -3,12 +3,12 @@
  * Data Machine Logger Functions
  *
  * Core logging implementation for the Data Machine system.
- * Provides centralized logging utilities using Monolog with WordPress integration.
- * Supports per-agent-type log files and log levels.
+ * Logs are stored in the datamachine_logs database table with agent_id scoping.
  *
  * ARCHITECTURE:
- * - datamachine_log action (DataMachineActions.php): Operations that modify state (write, clear, cleanup, set_level)
+ * - datamachine_log action (DataMachineActions.php): Public API for all log writes
  * - Logger utilities (this file): Core logging implementation and utilities
+ * - LogRepository (Database/Logs): SQL storage backend
  *
  * @package DataMachine
  * @subpackage Engine
@@ -19,352 +19,193 @@ if ( ! defined( 'WPINC' ) ) {
 	die;
 }
 
-use Monolog\Logger as MonologLogger;
-use Monolog\Handler\StreamHandler;
-use Monolog\Formatter\LineFormatter;
-use Monolog\Level;
-use DataMachine\Engine\AI\AgentType;
-use DataMachine\Engine\AI\AgentContext;
+use DataMachine\Core\Database\Logs\LogRepository;
+use DataMachine\Abilities\PermissionHelper;
 
 /**
- * Get Monolog instance for a specific agent type with request-level caching.
+ * Resolve agent_id from context array or PermissionHelper.
  *
- * @param string $agent_type Agent type (pipeline, chat)
- * @param bool $force_refresh Force recreation of Monolog instance
- * @return MonologLogger Configured Monolog instance
+ * Priority:
+ * 1. Explicit agent_id in context
+ * 2. Active agent context from PermissionHelper (set by AIStep / SystemTaskStep
+ *    / RunFlowAbility / AgentAuthMiddleware before firing tools)
+ * 3. PermissionHelper acting user → first agent owned by that user
+ *
+ * Priority 2 is the authoritative answer for any code path that runs
+ * inside an agent context — pipeline jobs, REST bearer-token requests,
+ * chat-orchestrator turns. Without it, log lines from inside a tool call
+ * fall through to the user→first-agent guess at priority 3, which is
+ * wrong on any site where the owner runs more than one agent (the lookup
+ * picks whichever agent the database returns first, not the one that
+ * actually did the work). See https://github.com/Extra-Chill/data-machine/issues/1268.
+ *
+ * @param array $context Log context array.
+ * @return int|null Resolved agent_id, or null for system/unscoped.
  */
-function datamachine_get_monolog_instance(string $agent_type = AgentType::PIPELINE, bool $force_refresh = false): MonologLogger {
-    static $monolog_instances = [];
+function datamachine_resolve_agent_id( array $context = array() ): ?int {
+	// Priority 1: Explicit agent_id in context.
+	if ( isset( $context['agent_id'] ) && is_numeric( $context['agent_id'] ) && $context['agent_id'] > 0 ) {
+		return (int) $context['agent_id'];
+	}
 
-    if (!AgentType::isValid($agent_type)) {
-        $agent_type = AgentType::PIPELINE;
-    }
+	// Priority 2: Active agent context from PermissionHelper.
+	// AIStep, SystemTaskStep, RunFlowAbility, and AgentAuthMiddleware
+	// all install this via set_agent_context() before invoking tools or
+	// firing logs. When present, it is the authoritative answer — much
+	// sharper than the owner→first-agent fallback at priority 3, which
+	// guesses wrong when an owner has multiple agents.
+	try {
+		if ( class_exists( PermissionHelper::class )
+			&& PermissionHelper::in_agent_context() ) {
+			$acting_agent_id = PermissionHelper::get_acting_agent_id();
+			if ( $acting_agent_id ) {
+				return (int) $acting_agent_id;
+			}
+		}
+	} catch ( \Exception $e ) {
+		// Silently fall through — don't let agent resolution crash logging.
+		unset( $e );
+	}
 
-    if (!isset($monolog_instances[$agent_type]) || $force_refresh) {
-        $log_level_setting = datamachine_get_log_level($agent_type);
-        $log_level = datamachine_get_monolog_level($log_level_setting);
+	// Priority 3: Resolve from PermissionHelper acting user → first
+	// agent owned by that user. Legacy fallback for code paths that
+	// don't install agent context (admin REST calls outside an agent
+	// session, manual CLI invocations, etc.). When the owner has
+	// multiple agents this guesses; priority 2 above is the correct
+	// channel for agent-scoped contexts.
+	try {
+		if ( class_exists( PermissionHelper::class ) ) {
+			$user_id = PermissionHelper::acting_user_id();
+			if ( $user_id > 0 && class_exists( \DataMachine\Core\Database\Agents\Agents::class ) ) {
+				$agents_repo = new \DataMachine\Core\Database\Agents\Agents();
+				$agent       = $agents_repo->get_by_owner_id( $user_id );
+				if ( $agent && ! empty( $agent['agent_id'] ) ) {
+					return (int) $agent['agent_id'];
+				}
+			}
+		}
+	} catch ( \Exception $e ) {
+		// Silently fail — don't let agent resolution crash logging.
+		unset( $e );
+	}
 
-        $channel_name = 'DataMachine-' . ucfirst($agent_type);
-        $monolog_instances[$agent_type] = new MonologLogger($channel_name);
-
-        if ($log_level !== null) {
-            $log_file = datamachine_get_log_file_path($agent_type);
-            $handler = new StreamHandler($log_file, $log_level);
-
-            $formatter = new LineFormatter(
-                "[%datetime%] [%channel%.%level_name%]: %message% %context% %extra%\n",
-                "Y-m-d H:i:s",
-                true,
-                true
-            );
-            $handler->setFormatter($formatter);
-            $monolog_instances[$agent_type]->pushHandler($handler);
-        }
-    }
-
-    return $monolog_instances[$agent_type];
+	return null;
 }
 
 /**
- * Convert string log level to Monolog Level.
+ * Log a message to the database.
  *
- * @param string $level_string Log level string (debug, error, none)
- * @return Level|null Monolog level constant, null for 'none'
+ * Resolves agent_id from context or PermissionHelper, resolves user_id,
+ * and inserts into the datamachine_logs table via LogRepository.
+ *
+ * Respects the configured minimum log level (`datamachine_log_level` option).
+ * Messages below the minimum severity are silently discarded.
+ *
+ * @param string             $level   Log level string (debug, info, warning, error, critical).
+ * @param string|\Stringable $message Message to log.
+ * @param array              $context Optional context data.
  */
-function datamachine_get_monolog_level(string $level_string): ?Level {
-    switch (strtolower($level_string)) {
-        case 'debug':
-            return Level::Debug;
-        case 'error':
-            return Level::Error;
-        case 'none':
-            return null;
-        default:
-            return Level::Debug;
-    }
-}
+function datamachine_log_message( string $level, string|\Stringable $message, array $context = array() ): void {
+	try {
+		// Gate: discard messages below the configured minimum log level.
+		$severity_map = array(
+			'debug'    => 0,
+			'info'     => 1,
+			'warning'  => 2,
+			'error'    => 3,
+			'critical' => 4,
+		);
 
-/**
- * Resolve agent type from context, execution context, or default.
- *
- * @param array $context Log context array
- * @return string Resolved agent type
- */
-function datamachine_resolve_agent_type(array $context = []): string {
-    // Priority 1: Explicit agent_type in context
-    if (isset($context['agent_type']) && AgentType::isValid($context['agent_type'])) {
-        return $context['agent_type'];
-    }
+		// Use get_blog_option() with the current blog ID to ensure we read the
+		// log level from the same site whose log table we're about to write to.
+		// Plain get_option() can return the wrong site's setting on multisite when
+		// the calling context doesn't match the $wpdb->prefix (e.g., REST API on
+		// blog 1 triggering events-site pipeline logging via switch_to_blog).
+		$blog_id      = is_multisite() ? get_current_blog_id() : 0;
+		$min_level    = $blog_id ? get_blog_option( $blog_id, 'datamachine_log_level', 'info' ) : get_option( 'datamachine_log_level', 'info' );
+		$min_severity = $severity_map[ $min_level ] ?? 1;
+		$msg_severity = $severity_map[ $level ] ?? 0;
 
-    // Priority 2: Current execution context
-    $execution_context = AgentContext::get();
-    if ($execution_context !== null && AgentType::isValid($execution_context)) {
-        return $execution_context;
-    }
+		if ( $msg_severity < $min_severity ) {
+			return;
+		}
 
-    // Priority 3: Default to pipeline
-    return AgentType::PIPELINE;
-}
+		$repo     = new LogRepository();
+		$agent_id = datamachine_resolve_agent_id( $context );
 
-/**
- * Log a message using Monolog.
- *
- * Routes to the appropriate log file based on agent_type in context,
- * current AgentContext, or defaults to pipeline.
- *
- * @param Level $level Monolog level
- * @param string|\Stringable $message Message to log
- * @param array $context Optional context data
- */
-function datamachine_log_message(Level $level, string|\Stringable $message, array $context = []): void {
-    try {
-        $agent_type = datamachine_resolve_agent_type($context);
-        datamachine_get_monolog_instance($agent_type)->log($level, $message, $context);
-    } catch (\Exception $e) {
-        // Prevent logging failures from crashing the application
-    }
+		// Resolve user_id.
+		$user_id = null;
+		if ( isset( $context['user_id'] ) && is_numeric( $context['user_id'] ) && $context['user_id'] > 0 ) {
+			$user_id = (int) $context['user_id'];
+		} elseif ( class_exists( PermissionHelper::class ) ) {
+			$acting = PermissionHelper::acting_user_id();
+			if ( $acting > 0 ) {
+				$user_id = $acting;
+			}
+		}
+
+		$repo->log( $level, (string) $message, $context, $agent_id, $user_id );
+	} catch ( \Exception $e ) {
+		// Prevent logging failures from crashing the application.
+		unset( $e );
+	}
 }
 
 /**
  * Log an error message.
  *
- * @param string|\Stringable $message Error message
- * @param array $context Optional context data
+ * @param string|\Stringable $message Error message.
+ * @param array              $context Optional context data.
  */
-function datamachine_log_error(string|\Stringable $message, array $context = []): void {
-    datamachine_log_message(Level::Error, $message, $context);
+function datamachine_log_error( string|\Stringable $message, array $context = array() ): void {
+	datamachine_log_message( 'error', $message, $context );
 }
 
 /**
  * Log a warning message.
  *
- * @param string|\Stringable $message Warning message
- * @param array $context Optional context data
+ * @param string|\Stringable $message Warning message.
+ * @param array              $context Optional context data.
  */
-function datamachine_log_warning(string|\Stringable $message, array $context = []): void {
-    datamachine_log_message(Level::Warning, $message, $context);
+function datamachine_log_warning( string|\Stringable $message, array $context = array() ): void {
+	datamachine_log_message( 'warning', $message, $context );
 }
 
 /**
  * Log an informational message.
  *
- * @param string|\Stringable $message Info message
- * @param array $context Optional context data
+ * @param string|\Stringable $message Info message.
+ * @param array              $context Optional context data.
  */
-function datamachine_log_info(string|\Stringable $message, array $context = []): void {
-    datamachine_log_message(Level::Info, $message, $context);
+function datamachine_log_info( string|\Stringable $message, array $context = array() ): void {
+	datamachine_log_message( 'info', $message, $context );
 }
 
 /**
  * Log a debug message.
  *
- * @param string|\Stringable $message Debug message
- * @param array $context Optional context data
+ * @param string|\Stringable $message Debug message.
+ * @param array              $context Optional context data.
  */
-function datamachine_log_debug(string|\Stringable $message, array $context = []): void {
-    datamachine_log_message(Level::Debug, $message, $context);
+function datamachine_log_debug( string|\Stringable $message, array $context = array() ): void {
+	datamachine_log_message( 'debug', $message, $context );
 }
 
 /**
  * Log a critical message.
  *
- * @param string|\Stringable $message Critical message
- * @param array $context Optional context data
+ * @param string|\Stringable $message Critical message.
+ * @param array              $context Optional context data.
  */
-function datamachine_log_critical(string|\Stringable $message, array $context = []): void {
-    datamachine_log_message(Level::Critical, $message, $context);
-}
-
-/**
- * Get the log file path for a specific agent type.
- *
- * @param string $agent_type Agent type (pipeline, chat)
- * @return string Full path to log file
- */
-function datamachine_get_log_file_path(string $agent_type = AgentType::PIPELINE): string {
-    $upload_dir = wp_upload_dir();
-    $filename = AgentType::getLogFilename($agent_type);
-    return $upload_dir['basedir'] . DATAMACHINE_LOG_DIR . '/' . $filename;
-}
-
-/**
- * Get log file size in megabytes for a specific agent type.
- *
- * @param string $agent_type Agent type (pipeline, chat)
- * @return float File size in MB, 0 if file doesn't exist
- */
-function datamachine_get_log_file_size(string $agent_type = AgentType::PIPELINE): float {
-    $log_file = datamachine_get_log_file_path($agent_type);
-    if (!file_exists($log_file)) {
-        return 0;
-    }
-    return round(filesize($log_file) / 1024 / 1024, 2);
-}
-
-/**
- * Get recent log entries for a specific agent type.
- *
- * @param string $agent_type Agent type (pipeline, chat)
- * @param int $lines Number of lines to retrieve
- * @return array Array of log lines
- */
-function datamachine_get_recent_logs(string $agent_type = AgentType::PIPELINE, int $lines = 100): array {
-    $log_file = datamachine_get_log_file_path($agent_type);
-    if (!file_exists($log_file)) {
-        return ['No log file found.'];
-    }
-
-    $file_content = file($log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    if ($file_content === false) {
-        return ['Unable to read log file.'];
-    }
-
-    return array_slice($file_content, -$lines);
-}
-
-/**
- * Clean up log files based on size or age criteria.
- *
- * @param int $max_size_mb Maximum log file size in MB
- * @param int $max_age_days Maximum log file age in days
- * @return bool True if cleanup was performed on any file
- */
-function datamachine_cleanup_log_files(int $max_size_mb = 10, int $max_age_days = 30): bool {
-    $upload_dir = wp_upload_dir();
-    $log_dir = $upload_dir['basedir'] . DATAMACHINE_LOG_DIR;
-
-    if (!file_exists($log_dir)) {
-        return false;
-    }
-
-    $cleaned = false;
-    $max_size_bytes = $max_size_mb * 1024 * 1024;
-
-    foreach (AgentType::getAll() as $agent_type => $info) {
-        $log_file = datamachine_get_log_file_path($agent_type);
-
-        if (!file_exists($log_file)) {
-            continue;
-        }
-
-        $size_exceeds = filesize($log_file) > $max_size_bytes;
-        $age_exceeds = (time() - filemtime($log_file)) / DAY_IN_SECONDS > $max_age_days;
-
-        if ($size_exceeds && $age_exceeds) {
-            datamachine_log_debug("Log file cleanup triggered for {$agent_type}: Size and age limits exceeded");
-            if (datamachine_clear_log_file($agent_type)) {
-                $cleaned = true;
-            }
-        }
-    }
-
-    return $cleaned;
-}
-
-/**
- * Clear a specific agent type's log file.
- *
- * @param string $agent_type Agent type (pipeline, chat)
- * @return bool True on success
- */
-function datamachine_clear_log_file(string $agent_type): bool {
-    if (!AgentType::isValid($agent_type)) {
-        return false;
-    }
-
-    $log_file = datamachine_get_log_file_path($agent_type);
-    $log_dir = dirname($log_file);
-
-    if (!file_exists($log_dir)) {
-        wp_mkdir_p($log_dir);
-    }
-
-    $clear_result = file_put_contents($log_file, '');
-
-    if ($clear_result !== false) {
-        datamachine_log_debug("Log file cleared successfully for agent type: {$agent_type}");
-        return true;
-    } else {
-        datamachine_log_error("Failed to clear log file for agent type: {$agent_type}");
-        return false;
-    }
-}
-
-/**
- * Clear all agent type log files.
- *
- * @return bool True if all files cleared successfully
- */
-function datamachine_clear_all_log_files(): bool {
-    $success = true;
-
-    foreach (AgentType::getAll() as $agent_type => $info) {
-        if (!datamachine_clear_log_file($agent_type)) {
-            $success = false;
-        }
-    }
-
-    return $success;
-}
-
-/**
- * Get the log level for a specific agent type.
- *
- * @param string $agent_type Agent type (pipeline, chat)
- * @return string Log level (debug, error, none)
- */
-function datamachine_get_log_level(string $agent_type = AgentType::PIPELINE): string {
-    if (!AgentType::isValid($agent_type)) {
-        $agent_type = AgentType::PIPELINE;
-    }
-    return get_option("datamachine_log_level_{$agent_type}", 'error');
-}
-
-/**
- * Set the log level for a specific agent type.
- *
- * @param string $agent_type Agent type (pipeline, chat)
- * @param string $level Log level (debug, error, none)
- * @return bool True on success
- */
-function datamachine_set_log_level(string $agent_type, string $level): bool {
-    if (!AgentType::isValid($agent_type)) {
-        return false;
-    }
-
-    $available_levels = array_keys(datamachine_get_available_log_levels());
-    if (!in_array($level, $available_levels)) {
-        return false;
-    }
-
-    $updated = update_option("datamachine_log_level_{$agent_type}", $level);
-
-    // Force refresh of Monolog instance to apply new level
-    if ($updated) {
-        datamachine_get_monolog_instance($agent_type, true);
-    }
-
-    return $updated;
+function datamachine_log_critical( string|\Stringable $message, array $context = array() ): void {
+	datamachine_log_message( 'critical', $message, $context );
 }
 
 /**
  * Get all valid log levels that can be used for logging operations.
  *
- * @return array Array of valid log level strings
+ * @return array Array of valid log level strings.
  */
 function datamachine_get_valid_log_levels(): array {
-    return ['debug', 'info', 'warning', 'error', 'critical'];
-}
-
-/**
- * Get user-configurable log levels for admin interface.
- *
- * @return array Array of log levels with descriptions for user selection
- */
-function datamachine_get_available_log_levels(): array {
-    return [
-        'debug' => 'Debug (full logging)',
-        'error' => 'Error (problems only)',
-        'none' => 'None (disable logging)'
-    ];
+	return array( 'debug', 'info', 'warning', 'error', 'critical' );
 }
