@@ -14,7 +14,7 @@ namespace DataMachine\Abilities;
 use DataMachine\Abilities\PermissionHelper;
 
 use DataMachine\Engine\AI\RequestBuilder;
-use DataMachine\Engine\AI\AgentMessageEnvelope;
+use AgentsAPI\AI\AgentMessageEnvelope;
 use DataMachine\Core\Database\Chat\ConversationStoreFactory;
 use DataMachine\Core\PluginSettings;
 use DataMachine\Engine\Tasks\TaskScheduler;
@@ -671,10 +671,7 @@ class SystemAbilities {
 		);
 
 		$messages = array(
-			array(
-				'role'    => 'user',
-				'content' => $prompt,
-			),
+			\DataMachine\Engine\AI\ConversationManager::buildConversationMessage( 'user', $prompt ),
 		);
 
 		$request = array(
@@ -693,20 +690,20 @@ class SystemAbilities {
 				array() // No payload needed
 			);
 
-			if ( ! $response['success'] ) {
+			if ( $response instanceof \WP_Error ) {
 				do_action(
 					'datamachine_log',
 					'error',
 					'Session title AI generation failed',
 					array(
-						'error'   => $response['error'] ?? 'Unknown error',
+						'error'   => $response->get_error_message(),
 						'context' => 'system',
 					)
 				);
 					return null;
 			}
 
-			$content = $response['data']['content'] ?? '';
+			$content = RequestBuilder::resultText( $response );
 			if ( empty($content) ) {
 				return null;
 			}

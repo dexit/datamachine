@@ -1,6 +1,6 @@
 # Data Machine
 
-Agentic infrastructure for WordPress.
+Agentic workflow automation for WordPress.
 
 ## What It Does
 
@@ -11,6 +11,8 @@ Data Machine turns a WordPress site into an agent runtime — persistent identit
 - **Agent memory** — Layered markdown files (SOUL.md + MEMORY.md in agent layer, USER.md in user layer) injected into every AI context
 - **Multi-agent** — Multiple agents with scoped pipelines, flows, jobs, and filesystem directories
 - **Self-scheduling** — Agents schedule their own recurring tasks using flows, prompt queues, and Agent Pings
+
+Data Machine builds on [Agents API](https://github.com/Automattic/agents-api) for generic agent runtime contracts and durable agent primitives. Data Machine owns the WordPress automation product layer: pipelines, flows, jobs, handlers, tools, abilities, memory files, system tasks, and admin/CLI surfaces.
 
 ## Architecture
 
@@ -26,17 +28,17 @@ Data Machine turns a WordPress site into an agent runtime — persistent identit
 
 **Pipelines** define the workflow template. **Flows** schedule when they run. **Jobs** track each execution with full undo support.
 
-### Agent Contexts
+### Agent Modes
 
-One agent, three operational modes — same identity and memory, different tools:
+One agent, three operational modes — same identity and memory, different guidance and tools:
 
-| Context | Purpose | Tools |
+| Mode | Purpose | Tools |
 |---------|---------|-------|
 | **Pipeline** | Automated workflow execution | Handler-specific tools scoped to the current step |
 | **Chat** | Conversational interface in wp-admin | 30+ management tools (flows, pipelines, jobs, logs, memory, content) |
 | **System** | Background infrastructure tasks | Alt text, daily memory, image generation, internal linking, meta descriptions (GitHub issues in data-machine-code extension) |
 
-Configure AI provider and model per context in Settings. Each context falls back to the global default if no override is set.
+Built-in mode guidance is injected by `AgentModeDirective` at runtime and extensions can register more modes through `AgentModeRegistry`. Configure AI provider and model per mode in Settings. Each mode falls back to the global default if no override is set.
 
 ### Agent Memory
 
@@ -61,13 +63,15 @@ Typed, permissioned functions registered via WordPress's Abilities API. Extensio
 
 | Ability | Description |
 |---------|-------------|
-| `datamachine/upload-media` | Upload/fetch image or video, store in repository or Media Library |
-| `datamachine/validate-media` | Validate against platform constraints (duration, size, codec, aspect ratio) |
-| `datamachine/video-metadata` | Extract duration, resolution, codec via ffprobe |
-| `datamachine/instagram-publish` | Publish to Instagram (image, carousel, Reel, Story) |
-| `datamachine/twitter-publish` | Publish to Twitter with media support |
-| `datamachine/flow-execute` | Execute a flow programmatically |
-| ... | 40+ abilities across media, publishing, content, SEO, and infrastructure |
+| `datamachine/query-posts` | Query WordPress posts for pipeline/content operations |
+| `datamachine/publish-wordpress` | Publish canonical content to WordPress |
+| `datamachine/update-wordpress` | Update existing WordPress content |
+| `datamachine/generate-alt-text` | Generate alt text for media |
+| `datamachine/generate-meta-description` | Generate SEO meta descriptions |
+| `datamachine/run-flow` | Execute a flow programmatically |
+| ... | Additional core abilities across pipelines, flows, jobs, memory, media, SEO, email, and infrastructure |
+
+Social publishing, workspace, and GitHub abilities live in extension plugins such as data-machine-socials and data-machine-code.
 
 ### Content Formats
 
@@ -221,11 +225,11 @@ Full REST API under `datamachine/v1`:
 
 ## AI Providers
 
-OpenAI, Anthropic, Google, Grok, OpenRouter — configure a global default per-site, with per-context overrides for pipeline, chat, and system.
+OpenAI, Anthropic, Google, Grok, OpenRouter — configure a global default per-site, with per-mode overrides for pipeline, chat, and system.
 
 ## Runtime Adapters
 
-Data Machine ships its own multi-turn conversation loop and uses it by default. The loop is also swappable: a single Agents API-shaped filter (`agents_api_conversation_runner`) lets an external runtime take over while Data Machine still provides pipelines, flows, tool resolution, abilities, and memory.
+Data Machine's runtime seams use Agents API vocabulary. The conversation loop is swappable through `agents_api_conversation_runner`, letting another durable agent runtime take over while Data Machine still provides pipelines, flows, jobs, tool resolution, abilities, and memory integration.
 
 ```php
 add_filter(
@@ -285,8 +289,7 @@ homeboy lint data-machine    # PHPCS with WordPress standards
 
 - [docs/](docs/) — User documentation
 - [docs/architecture/pipeline-execution-axes.md](docs/architecture/pipeline-execution-axes.md) — Four orthogonal axes of work expansion in a pipeline
-- [skills/data-machine/SKILL.md](skills/data-machine/SKILL.md) — Agent integration patterns
-- [AGENTS.md](AGENTS.md) — Technical reference for contributors
+- Data Machine skill and agent instruction files are generated into consumer environments rather than stored in this plugin tree
 - [docs/CHANGELOG.md](docs/CHANGELOG.md) — Version history
 
 ## Star History

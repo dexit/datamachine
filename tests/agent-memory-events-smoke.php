@@ -198,22 +198,22 @@ if ( ! function_exists( 'is_wp_error' ) ) {
 
 require_once __DIR__ . '/../inc/Engine/AI/MemoryFileRegistry.php';
 require_once __DIR__ . '/../inc/Core/FilesRepository/DirectoryManager.php';
-require_once __DIR__ . '/../inc/Core/FilesRepository/AgentMemoryScope.php';
-require_once __DIR__ . '/../inc/Core/FilesRepository/AgentMemoryReadResult.php';
-require_once __DIR__ . '/../inc/Core/FilesRepository/AgentMemoryWriteResult.php';
-require_once __DIR__ . '/../inc/Core/FilesRepository/AgentMemoryListEntry.php';
-require_once __DIR__ . '/../inc/Core/FilesRepository/AgentMemoryStoreInterface.php';
+require_once __DIR__ . '/agents-api-loader.php';
+datamachine_tests_require_agents_api();
 require_once __DIR__ . '/../inc/Core/FilesRepository/DiskAgentMemoryStore.php';
 require_once __DIR__ . '/../inc/Core/FilesRepository/AgentMemoryStoreFactory.php';
 require_once __DIR__ . '/../inc/Core/FilesRepository/AgentMemory.php';
 require_once __DIR__ . '/../inc/Core/FilesRepository/GuidelineAgentMemoryStore.php';
 
 use DataMachine\Core\FilesRepository\AgentMemory;
-use DataMachine\Core\FilesRepository\AgentMemoryListEntry;
-use DataMachine\Core\FilesRepository\AgentMemoryReadResult;
-use DataMachine\Core\FilesRepository\AgentMemoryScope;
-use DataMachine\Core\FilesRepository\AgentMemoryStoreInterface;
-use DataMachine\Core\FilesRepository\AgentMemoryWriteResult;
+use AgentsAPI\Core\FilesRepository\AgentMemoryListEntry;
+use AgentsAPI\Core\FilesRepository\AgentMemoryMetadata;
+use AgentsAPI\Core\FilesRepository\AgentMemoryQuery;
+use AgentsAPI\Core\FilesRepository\AgentMemoryReadResult;
+use AgentsAPI\Core\FilesRepository\AgentMemoryScope;
+use AgentsAPI\Core\FilesRepository\AgentMemoryStoreCapabilities;
+use AgentsAPI\Core\FilesRepository\AgentMemoryStoreInterface;
+use AgentsAPI\Core\FilesRepository\AgentMemoryWriteResult;
 use DataMachine\Core\FilesRepository\GuidelineAgentMemoryStore;
 
 class AgentMemoryEventsFakeStore implements AgentMemoryStoreInterface {
@@ -226,17 +226,21 @@ class AgentMemoryEventsFakeStore implements AgentMemoryStoreInterface {
 	public bool $fail_next_write  = false;
 	public bool $fail_next_delete = false;
 
-	public function read( AgentMemoryScope $scope ): AgentMemoryReadResult {
+	public function capabilities(): AgentMemoryStoreCapabilities {
+		return AgentMemoryStoreCapabilities::none();
+	}
+
+	public function read( AgentMemoryScope $scope, array $metadata_fields = AgentMemoryMetadata::FIELDS ): AgentMemoryReadResult {
 		if ( ! array_key_exists( $scope->key(), $this->files ) ) {
 			return AgentMemoryReadResult::not_found();
 		}
 
 		$content = $this->files[ $scope->key() ];
-		return new AgentMemoryReadResult( true, $content, sha1( $content ), strlen( $content ), 123 );
+		return new AgentMemoryReadResult( true, $content, sha1( $content ), strlen( $content ), 123, null, $metadata_fields );
 	}
 
-	public function write( AgentMemoryScope $scope, string $content, ?string $_if_match = null ): AgentMemoryWriteResult {
-		unset( $_if_match );
+	public function write( AgentMemoryScope $scope, string $content, ?string $_if_match = null, ?AgentMemoryMetadata $metadata = null ): AgentMemoryWriteResult {
+		unset( $_if_match, $metadata );
 		if ( $this->fail_next_write ) {
 			$this->fail_next_write = false;
 			return AgentMemoryWriteResult::failure( 'io' );
@@ -260,13 +264,13 @@ class AgentMemoryEventsFakeStore implements AgentMemoryStoreInterface {
 		return AgentMemoryWriteResult::ok( '', 0 );
 	}
 
-	public function list_layer( AgentMemoryScope $_scope_query ): array {
-		unset( $_scope_query );
+	public function list_layer( AgentMemoryScope $_scope_query, ?AgentMemoryQuery $query = null ): array {
+		unset( $_scope_query, $query );
 		return array();
 	}
 
-	public function list_subtree( AgentMemoryScope $_scope_query, string $_prefix ): array {
-		unset( $_scope_query, $_prefix );
+	public function list_subtree( AgentMemoryScope $_scope_query, string $_prefix, ?AgentMemoryQuery $query = null ): array {
+		unset( $_scope_query, $_prefix, $query );
 		return array();
 	}
 }
@@ -319,7 +323,7 @@ datamachine_agent_memory_events_assert( 'agent' === $metadata['layer'], 'update 
 datamachine_agent_memory_events_assert( 7 === $metadata['user_id'], 'update metadata includes user id' );
 datamachine_agent_memory_events_assert( 42 === $metadata['agent_id'], 'update metadata includes agent id' );
 datamachine_agent_memory_events_assert( 'MEMORY.md' === $metadata['filename'], 'update metadata includes filename' );
-datamachine_agent_memory_events_assert( 'agent:7:42:MEMORY.md' === $metadata['key'], 'update metadata includes stable scope key' );
+datamachine_agent_memory_events_assert( 'agent:site:1:7:42:MEMORY.md' === $metadata['key'], 'update metadata includes stable scope key' );
 datamachine_agent_memory_events_assert( sha1( "# Memory\n" ) === $metadata['hash'], 'update metadata includes content hash' );
 datamachine_agent_memory_events_assert( strlen( "# Memory\n" ) === $metadata['bytes'], 'update metadata includes byte count' );
 
@@ -335,7 +339,7 @@ datamachine_agent_memory_events_assert( true === $delete['success'], 'delete suc
 $deletes = datamachine_agent_memory_events_matching( 'datamachine_agent_memory_deleted' );
 datamachine_agent_memory_events_assert( 1 === count( $deletes ), 'successful delete emits one memory delete event' );
 datamachine_agent_memory_events_assert( $deletes[0]['args'][0] instanceof AgentMemoryScope, 'delete event includes AgentMemoryScope argument' );
-datamachine_agent_memory_events_assert( 'agent:7:42:MEMORY.md' === $deletes[0]['args'][0]->key(), 'delete event scope identifies deleted memory' );
+datamachine_agent_memory_events_assert( 'agent:site:1:7:42:MEMORY.md' === $deletes[0]['args'][0]->key(), 'delete event scope identifies deleted memory' );
 
 $GLOBALS['datamachine_agent_memory_events_actions'] = array();
 $store->fail_next_delete                            = true;
@@ -348,7 +352,7 @@ $GLOBALS['datamachine_agent_memory_events_taxonomies'] = array( GuidelineAgentMe
 $GLOBALS['datamachine_agent_memory_events_actions']    = array();
 
 $guideline_store = new GuidelineAgentMemoryStore();
-$guideline_scope = new AgentMemoryScope( 'agent', 7, 42, 'GUIDELINE.md' );
+$guideline_scope = new AgentMemoryScope( 'agent', 'site', 'https://example.test', 7, 42, 'GUIDELINE.md' );
 $guideline_write = $guideline_store->write( $guideline_scope, 'Guideline content' );
 datamachine_agent_memory_events_assert( true === $guideline_write->success, 'guideline-backed write succeeds when substrate exists' );
 
@@ -360,7 +364,7 @@ datamachine_agent_memory_events_assert( GuidelineAgentMemoryStore::TERM_MEMORY =
 $GLOBALS['datamachine_agent_memory_events_post_types'] = array();
 $GLOBALS['datamachine_agent_memory_events_taxonomies'] = array();
 $GLOBALS['datamachine_agent_memory_events_actions']    = array();
-$capability_write                                      = $guideline_store->write( new AgentMemoryScope( 'agent', 7, 42, 'UNAVAILABLE.md' ), 'No substrate' );
+$capability_write                                      = $guideline_store->write( new AgentMemoryScope( 'agent', 'site', 'https://example.test', 7, 42, 'UNAVAILABLE.md' ), 'No substrate' );
 datamachine_agent_memory_events_assert( false === $capability_write->success, 'guideline-backed write fails cleanly without substrate' );
 datamachine_agent_memory_events_assert( array() === datamachine_agent_memory_events_matching( 'datamachine_guideline_updated' ), 'unavailable guideline substrate does not emit guideline event' );
 

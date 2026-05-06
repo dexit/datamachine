@@ -1,11 +1,11 @@
 # Agent Message Envelope
 
-**File**: `/inc/Engine/AI/AgentMessageEnvelope.php`
+**File**: `/agents-api/inc/AI/AgentMessageEnvelope.php`
 
 The canonical agent message shape is a JSON-friendly typed envelope. Runtime
 code, chat storage, and transcript storage should store and return envelopes.
 Provider-specific `role/content/metadata` arrays are a projection used at the
-current `ai-http-client` boundary, not the internal contract.
+request-runtime boundary, not the internal contract.
 
 ## Envelope Shape
 
@@ -52,9 +52,9 @@ the initial envelope draft as a read-time compatibility input and rewrites it to
 
 New writes should store canonical envelopes. Current provider requests use
 `AgentMessageEnvelope::to_provider_message()` / `to_provider_messages()` to
-project envelopes into the `role/content/metadata` shape expected by
-`ai-http-client`. That projection folds the envelope `type` and `payload` into
-provider metadata.
+project envelopes into Data Machine's `role/content/metadata` provider-message
+shape. That projection folds the envelope `type` and `payload` into provider
+metadata.
 
 ## Type Payload
 

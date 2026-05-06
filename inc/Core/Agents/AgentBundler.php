@@ -24,7 +24,9 @@ use DataMachine\Engine\Bundle\AgentBundleDirectory;
 use DataMachine\Engine\Bundle\AgentBundleFlowFile;
 use DataMachine\Engine\Bundle\AgentBundleLegacyAdapter;
 use DataMachine\Engine\Bundle\AgentBundleManifest;
+use DataMachine\Engine\Bundle\AgentBundleRuntimeDrift;
 use DataMachine\Engine\Bundle\AgentBundlePipelineFile;
+use DataMachine\Engine\Bundle\AgentPackageProjection;
 use DataMachine\Engine\Bundle\BundleValidationException;
 use DataMachine\Engine\Bundle\PortableSlug;
 
@@ -236,11 +238,34 @@ class AgentBundler {
 			)
 		);
 
+		$directory = new AgentBundleDirectory( $manifest, $memory_files, $pipeline_documents, $flow_documents, array(), $extension_artifacts );
+
 		return array(
 			'success'   => true,
 			'agent'     => $agent,
-			'directory' => new AgentBundleDirectory( $manifest, $memory_files, $pipeline_documents, $flow_documents, array(), $extension_artifacts ),
+			'directory' => $directory,
+			'package'   => AgentPackageProjection::from_directory( $directory ),
 		);
+	}
+
+	/**
+	 * Project a legacy bundle array to the Core-shaped package contract.
+	 *
+	 * @param array<string,mixed> $bundle Legacy bundle array.
+	 * @return \WP_Agent_Package
+	 */
+	public static function package_from_bundle( array $bundle ): \WP_Agent_Package {
+		return AgentPackageProjection::from_legacy_bundle( $bundle );
+	}
+
+	/**
+	 * Project a bundle directory to the Core-shaped package contract.
+	 *
+	 * @param AgentBundleDirectory $directory Bundle directory.
+	 * @return \WP_Agent_Package
+	 */
+	public static function package_from_directory( AgentBundleDirectory $directory ): \WP_Agent_Package {
+		return AgentPackageProjection::from_directory( $directory );
 	}
 
 	/**
@@ -420,9 +445,10 @@ class AgentBundler {
 	 * @param string|null $new_slug Optional override slug.
 	 * @param int         $owner_id WordPress user ID to own the imported agent.
 	 * @param bool        $dry_run  If true, validate without writing.
+	 * @param array       $options  Import options.
 	 * @return array{success: bool, message?: string, error?: string, summary?: array}
 	 */
-	public function import( array $bundle, ?string $new_slug = null, int $owner_id = 0, bool $dry_run = false ): array {
+	public function import( array $bundle, ?string $new_slug = null, int $owner_id = 0, bool $dry_run = false, array $options = array() ): array {
 		// Validate bundle.
 		if ( empty( $bundle['bundle_version'] ) || empty( $bundle['agent'] ) ) {
 			return array(
@@ -446,6 +472,7 @@ class AgentBundler {
 			'source_revision' => $bundle_source_revision,
 		);
 		$is_portable_bundle     = ! empty( $bundle['bundle_slug'] ) || $this->bundle_has_portable_artifacts( $bundle );
+		$reconcile_runtime      = ! empty( $options['reconcile_runtime'] );
 
 		// Check for slug collision.
 		$existing = $this->agents_repo->get_by_slug( $slug );
@@ -492,6 +519,7 @@ class AgentBundler {
 			'extension_artifacts' => count( $bundle['extension_artifacts'] ?? array() ),
 			'has_user_template'   => ! empty( $bundle['user_template'] ),
 			'upgrade'             => (bool) $existing,
+			'runtime_policy'      => $reconcile_runtime ? 'replace_bundle_seed' : 'preserve_existing',
 		);
 
 		if ( $dry_run ) {
@@ -562,24 +590,34 @@ class AgentBundler {
 
 		$artifact_records = $config['datamachine_bundle']['artifacts'];
 		$conflicts        = array();
+		$runtime_drift    = array();
 
 		// 4. Import pipelines — build old→new ID map.
 		$pipeline_id_map = array(); // old_id => new_id.
 		foreach ( $bundle['pipelines'] ?? array() as $pipeline_data ) {
 			$old_id            = (int) ( $pipeline_data['original_id'] ?? 0 );
+			$pipeline_config   = is_array( $pipeline_data['pipeline_config'] ?? null ) ? $pipeline_data['pipeline_config'] : array();
 			$portable_slug     = PortableSlug::normalize(
 				(string) ( $pipeline_data['portable_slug'] ?? ( $pipeline_data['pipeline_name'] ?? 'pipeline' ) ),
 				'pipeline'
 			);
 			$artifact_key      = 'pipeline:' . $portable_slug;
-			$payload           = $this->pipeline_artifact_payload( $pipeline_data, $portable_slug );
 			$existing_pipeline = $this->pipelines_repo->get_by_portable_slug( $agent_id, $portable_slug );
+			$target_pipeline   = $pipeline_data;
+			if ( $existing_pipeline ) {
+				$target_pipeline['pipeline_config'] = $this->remap_pipeline_step_ids( $pipeline_config, $old_id, (int) $existing_pipeline['pipeline_id'] );
+			}
+			$payload = $this->pipeline_artifact_payload( $target_pipeline, $portable_slug );
 
 			if (
 				$existing_pipeline
 				&& $this->artifact_has_local_modifications(
 					$artifact_records[ $artifact_key ] ?? null,
 					$this->pipeline_artifact_payload( $existing_pipeline, $portable_slug )
+				)
+				&& ! hash_equals(
+					AgentBundleArtifactHasher::hash( $payload ),
+					AgentBundleArtifactHasher::hash( $this->pipeline_artifact_payload( $existing_pipeline, $portable_slug ) )
 				)
 			) {
 				$conflicts[]                = array(
@@ -593,18 +631,10 @@ class AgentBundler {
 
 			if ( $existing_pipeline ) {
 				$new_pipeline_id = (int) $existing_pipeline['pipeline_id'];
-				$this->pipelines_repo->update_pipeline(
-					$new_pipeline_id,
-					array(
-						'pipeline_name'   => $pipeline_data['pipeline_name'],
-						'pipeline_config' => $pipeline_data['pipeline_config'] ?? array(),
-						'portable_slug'   => $portable_slug,
-					)
-				);
 			} else {
 				$new_pipeline_id = $this->pipelines_repo->create_pipeline( array(
 					'pipeline_name'   => $pipeline_data['pipeline_name'],
-					'pipeline_config' => $pipeline_data['pipeline_config'] ?? array(),
+					'pipeline_config' => $pipeline_config,
 					'portable_slug'   => $portable_slug,
 					'agent_id'        => $agent_id,
 					'user_id'         => $owner_id,
@@ -612,6 +642,16 @@ class AgentBundler {
 			}
 
 			if ( $new_pipeline_id ) {
+				$pipeline_config = $this->remap_pipeline_step_ids( $pipeline_config, $old_id, (int) $new_pipeline_id );
+				$this->pipelines_repo->update_pipeline(
+					(int) $new_pipeline_id,
+					array(
+						'pipeline_name'   => $pipeline_data['pipeline_name'],
+						'pipeline_config' => $pipeline_config,
+						'portable_slug'   => $portable_slug,
+					)
+				);
+
 				$pipeline_id_map[ $old_id ]        = (int) $new_pipeline_id;
 				$artifact_records[ $artifact_key ] = $this->bundle_artifact_record(
 					$bundle_metadata,
@@ -653,19 +693,40 @@ class AgentBundler {
 				$scheduling['interval']           = 'manual';
 			}
 
-			$flow_config = $flow_data['flow_config'] ?? array();
-
-			// Remap pipeline step IDs inside flow_config.
-			$flow_config         = $this->remap_flow_step_ids( $flow_config, $old_pipeline_id, $new_pipeline_id );
+			$flow_config         = is_array( $flow_data['flow_config'] ?? null ) ? $flow_data['flow_config'] : array();
 			$existing_flow       = $this->flows_repo->get_by_portable_slug( (int) $new_pipeline_id, $portable_slug );
-			$flow_payload_source = array_merge( $flow_data, array( 'flow_config' => $flow_config ) );
+			$target_flow_config  = $existing_flow
+				? $this->remap_flow_step_ids( $flow_config, $old_pipeline_id, (int) $new_pipeline_id, (int) $existing_flow['flow_id'] )
+				: $flow_config;
+			$flow_payload_source = array_merge(
+				$flow_data,
+				array(
+					'flow_config' => $target_flow_config,
+				)
+			);
 			$payload             = $this->flow_artifact_payload( $flow_payload_source, $portable_slug );
+
+			if ( $existing_flow ) {
+				$preview = AgentBundleRuntimeDrift::preview(
+					$portable_slug,
+					$existing_flow,
+					array_merge( $flow_data, array( 'flow_config' => $target_flow_config ) ),
+					$reconcile_runtime ? 'replace_bundle_seed' : 'preserve_existing'
+				);
+				if ( null !== $preview ) {
+					$runtime_drift[] = $preview;
+				}
+			}
 
 			if (
 				$existing_flow
 				&& $this->artifact_has_local_modifications(
 					$artifact_records[ $artifact_key ] ?? null,
 					$this->flow_artifact_payload( $existing_flow, $portable_slug )
+				)
+				&& ! hash_equals(
+					AgentBundleArtifactHasher::hash( $payload ),
+					AgentBundleArtifactHasher::hash( $this->normalized_existing_flow_payload( $existing_flow, $portable_slug, (int) $new_pipeline_id ) )
 				)
 			) {
 				$conflicts[] = array(
@@ -678,25 +739,44 @@ class AgentBundler {
 
 			if ( $existing_flow ) {
 				$new_flow_id = (int) $existing_flow['flow_id'];
-				$flow_config = $this->preserve_runtime_queue_fields( $flow_config, $existing_flow['flow_config'] ?? array() );
+				$flow_config = $this->remap_flow_step_ids( $flow_config, $old_pipeline_id, (int) $new_pipeline_id, $new_flow_id );
+				$flow_config = $reconcile_runtime
+					? AgentBundleRuntimeDrift::replace_runtime_queue_fields( $flow_config, $target_flow_config )
+					: $this->preserve_runtime_queue_fields( $flow_config, $existing_flow['flow_config'] ?? array() );
+				$update_data = array(
+					'flow_name'     => $flow_data['flow_name'],
+					'flow_config'   => $flow_config,
+					'portable_slug' => $portable_slug,
+				);
+				if ( $reconcile_runtime ) {
+					$update_data['scheduling_config'] = $flow_data['scheduling_config'] ?? array();
+				}
 				$this->flows_repo->update_flow(
 					$new_flow_id,
-					array(
-						'flow_name'     => $flow_data['flow_name'],
-						'flow_config'   => $flow_config,
-						'portable_slug' => $portable_slug,
-					)
+					$update_data
 				);
 			} else {
 				$new_flow_id = $this->flows_repo->create_flow( array(
 					'pipeline_id'       => $new_pipeline_id,
 					'flow_name'         => $flow_data['flow_name'],
-					'flow_config'       => $flow_config,
+					'flow_config'       => array(),
 					'scheduling_config' => $scheduling,
 					'portable_slug'     => $portable_slug,
 					'agent_id'          => $agent_id,
 					'user_id'           => $owner_id,
 				) );
+
+				if ( $new_flow_id ) {
+					$flow_config = $this->remap_flow_step_ids( $flow_config, $old_pipeline_id, (int) $new_pipeline_id, (int) $new_flow_id );
+					$this->flows_repo->update_flow(
+						(int) $new_flow_id,
+						array(
+							'flow_name'     => $flow_data['flow_name'],
+							'flow_config'   => $flow_config,
+							'portable_slug' => $portable_slug,
+						)
+					);
+				}
 			}
 
 			if ( $new_flow_id ) {
@@ -782,6 +862,7 @@ class AgentBundler {
 		$summary['pipelines_imported'] = count( $pipeline_id_map );
 		$summary['flows_imported']     = $flow_count;
 		$summary['conflicts']          = $conflicts;
+		$summary['runtime_drift']      = $runtime_drift;
 
 		$config['datamachine_bundle']['artifacts'] = $artifact_records;
 		$this->agents_repo->update_agent( $agent_id, array( 'agent_config' => $config ) );
@@ -874,15 +955,17 @@ class AgentBundler {
 	}
 
 	private static function artifact_key( string $type, string $id ): string {
-		return sanitize_key( $type ) . ':' . $id;
+		return AgentBundleArtifactExtensions::artifact_key( $type, $id );
 	}
 
 	private function preserve_runtime_queue_fields( array $incoming_flow_config, array $existing_flow_config ): array {
+		$runtime_fields = array( 'prompt_queue', 'config_patch_queue', 'queue_mode', '_queue_consume_revision' );
+
 		foreach ( $incoming_flow_config as $flow_step_id => &$step ) {
 			if ( ! is_array( $step ) || ! is_array( $existing_flow_config[ $flow_step_id ] ?? null ) ) {
 				continue;
 			}
-			foreach ( array( 'prompt_queue', 'config_patch_queue', 'queue_mode' ) as $field ) {
+			foreach ( $runtime_fields as $field ) {
 				if ( array_key_exists( $field, $existing_flow_config[ $flow_step_id ] ) ) {
 					$step[ $field ] = $existing_flow_config[ $flow_step_id ][ $field ];
 				}
@@ -898,11 +981,31 @@ class AgentBundler {
 			if ( ! is_array( $step ) ) {
 				continue;
 			}
-			unset( $step['prompt_queue'], $step['config_patch_queue'], $step['queue_mode'] );
+			unset( $step['prompt_queue'], $step['config_patch_queue'], $step['queue_mode'], $step['_queue_consume_revision'] );
 		}
 		unset( $step );
 
 		return $flow_config;
+	}
+
+	private function normalized_existing_flow_payload( array $flow, string $portable_slug, int $new_pipeline_id ): array {
+		$flow_id     = (int) ( $flow['flow_id'] ?? 0 );
+		$flow_config = is_array( $flow['flow_config'] ?? null ) ? $flow['flow_config'] : array();
+
+		foreach ( $flow_config as $step_config ) {
+			if ( ! is_array( $step_config ) || ! isset( $step_config['pipeline_id'] ) ) {
+				continue;
+			}
+
+			$old_pipeline_id = (int) $step_config['pipeline_id'];
+			if ( $old_pipeline_id > 0 && $flow_id > 0 ) {
+				$flow['flow_config'] = $this->remap_flow_step_ids( $flow_config, $old_pipeline_id, $new_pipeline_id, $flow_id );
+			}
+
+			break;
+		}
+
+		return $this->flow_artifact_payload( $flow, $portable_slug );
 	}
 
 	/**
@@ -1174,35 +1277,79 @@ class AgentBundler {
 	}
 
 	/**
-	 * Remap pipeline step IDs inside a flow config.
+	 * Remap pipeline step IDs inside a pipeline config.
 	 *
-	 * Pipeline step IDs have the format {pipeline_id}_{uuid}. When importing,
-	 * the pipeline ID changes, so we need to rewrite these keys.
-	 *
-	 * @param array $flow_config      Flow config.
-	 * @param int   $old_pipeline_id  Original pipeline ID.
-	 * @param int   $new_pipeline_id  New pipeline ID.
-	 * @return array Updated flow config.
+	 * @param array $pipeline_config Pipeline config.
+	 * @param int   $old_pipeline_id Original pipeline ID.
+	 * @param int   $new_pipeline_id New pipeline ID.
+	 * @return array Updated pipeline config.
 	 */
-	private function remap_flow_step_ids( array $flow_config, int $old_pipeline_id, int $new_pipeline_id ): array {
-		if ( $old_pipeline_id === $new_pipeline_id ) {
-			return $flow_config;
-		}
-
+	private function remap_pipeline_step_ids( array $pipeline_config, int $old_pipeline_id, int $new_pipeline_id ): array {
 		$remapped = array();
-		$prefix   = $old_pipeline_id . '_';
 
-		foreach ( $flow_config as $key => $value ) {
-			// Remap step ID keys that start with old pipeline ID.
-			if ( is_string( $key ) && str_starts_with( $key, $prefix ) ) {
-				$new_key              = $new_pipeline_id . '_' . substr( $key, strlen( $prefix ) );
-				$remapped[ $new_key ] = $value;
-			} else {
-				$remapped[ $key ] = $value;
+		foreach ( $pipeline_config as $pipeline_step_id => $step_config ) {
+			$new_pipeline_step_id = $this->remap_step_id_prefix( (string) $pipeline_step_id, $old_pipeline_id, $new_pipeline_id );
+			if ( is_array( $step_config ) ) {
+				$step_config['pipeline_step_id'] = $new_pipeline_step_id;
 			}
+
+			$remapped[ $new_pipeline_step_id ] = $step_config;
 		}
 
 		return $remapped;
+	}
+
+	/**
+	 * Remap pipeline step IDs inside a flow config.
+	 *
+	 * Pipeline step IDs have the format {pipeline_id}_{uuid}. Flow step IDs add
+	 * the installed flow ID as the final suffix. Bundle-local IDs must be
+	 * rewritten after install or runtime lookups resolve the wrong pipeline.
+	 *
+	 * @param array $flow_config     Flow config.
+	 * @param int   $old_pipeline_id Original pipeline ID.
+	 * @param int   $new_pipeline_id New pipeline ID.
+	 * @param int   $new_flow_id     New flow ID.
+	 * @return array Updated flow config.
+	 */
+	private function remap_flow_step_ids( array $flow_config, int $old_pipeline_id, int $new_pipeline_id, int $new_flow_id ): array {
+		$remapped = array();
+
+		foreach ( $flow_config as $flow_step_id => $step_config ) {
+			$pipeline_step_id = is_array( $step_config ) && is_string( $step_config['pipeline_step_id'] ?? null )
+				? $step_config['pipeline_step_id']
+				: preg_replace( '/_\d+$/', '', (string) $flow_step_id );
+			$pipeline_step_id = $this->remap_step_id_prefix( (string) $pipeline_step_id, $old_pipeline_id, $new_pipeline_id );
+			$new_flow_step_id = $pipeline_step_id . '_' . $new_flow_id;
+
+			if ( is_array( $step_config ) ) {
+				$step_config['pipeline_step_id'] = $pipeline_step_id;
+				$step_config['pipeline_id']      = $new_pipeline_id;
+				$step_config['flow_id']          = $new_flow_id;
+				$step_config['flow_step_id']     = $new_flow_step_id;
+			}
+
+			$remapped[ $new_flow_step_id ] = $step_config;
+		}
+
+		return $remapped;
+	}
+
+	/**
+	 * Remap the pipeline ID prefix of a step ID.
+	 *
+	 * @param string $step_id         Step ID.
+	 * @param int    $old_pipeline_id Original pipeline ID.
+	 * @param int    $new_pipeline_id New pipeline ID.
+	 * @return string Remapped step ID.
+	 */
+	private function remap_step_id_prefix( string $step_id, int $old_pipeline_id, int $new_pipeline_id ): string {
+		$prefix = $old_pipeline_id . '_';
+		if ( $old_pipeline_id === $new_pipeline_id || ! str_starts_with( $step_id, $prefix ) ) {
+			return $step_id;
+		}
+
+		return $new_pipeline_id . '_' . substr( $step_id, strlen( $prefix ) );
 	}
 
 	/**
@@ -1212,7 +1359,7 @@ class AgentBundler {
 	 * @return string JSON string.
 	 */
 	public function to_json( array $bundle ): string {
-		return wp_json_encode( $bundle, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+		return (string) wp_json_encode( $bundle, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 	}
 
 	/**

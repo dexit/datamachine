@@ -14,6 +14,7 @@ namespace DataMachine\Engine\AI\System\Tasks;
 defined( 'ABSPATH' ) || exit;
 
 use DataMachine\Core\PluginSettings;
+use DataMachine\Engine\AI\ConversationManager;
 use DataMachine\Engine\AI\RequestBuilder;
 
 class AltTextTask extends SystemTask {
@@ -64,24 +65,21 @@ class AltTextTask extends SystemTask {
 		}
 
 		$file_info = wp_check_filetype( $file_path );
-		$mime_type = $file_info['type'] ?? '';
+		$mime_type = is_string( $file_info['type'] ) ? $file_info['type'] : '';
 
 		$prompt   = $this->buildPrompt( $attachment_id );
 		$messages = array(
-			array(
-				'role'    => 'user',
-				'content' => array(
+			ConversationManager::buildConversationMessage(
+				'user',
+				array(
 					array(
 						'type'      => 'file',
 						'file_path' => $file_path,
 						'mime_type' => $mime_type,
 					),
-				),
+				)
 			),
-			array(
-				'role'    => 'user',
-				'content' => $prompt,
-			),
+			ConversationManager::buildConversationMessage( 'user', $prompt ),
 		);
 
 		$ai_payload = array( 'attachment_id' => $attachment_id );
@@ -101,12 +99,12 @@ class AltTextTask extends SystemTask {
 			$ai_payload
 		);
 
-		if ( empty( $response['success'] ) ) {
-			$this->failJob( $jobId, 'AI request failed: ' . ( $response['error'] ?? 'Unknown error' ) );
+		if ( $response instanceof \WP_Error ) {
+			$this->failJob( $jobId, 'AI request failed: ' . $response->get_error_message() );
 			return;
 		}
 
-		$content  = $response['data']['content'] ?? '';
+		$content  = RequestBuilder::resultText( $response );
 		$alt_text = $this->normalizeAltText( $content );
 
 		if ( empty( $alt_text ) ) {
@@ -115,12 +113,7 @@ class AltTextTask extends SystemTask {
 		}
 
 		$current_alt = get_post_meta( $attachment_id, '_wp_attachment_image_alt', true );
-		$updated     = update_post_meta( $attachment_id, '_wp_attachment_image_alt', $alt_text );
-
-		if ( ! $updated && $current_alt !== $alt_text ) {
-			$this->failJob( $jobId, 'Failed to save alt text to post meta' );
-			return;
-		}
+		update_post_meta( $attachment_id, '_wp_attachment_image_alt', $alt_text );
 
 		$effects = array(
 			array(

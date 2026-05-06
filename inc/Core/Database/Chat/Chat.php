@@ -13,7 +13,9 @@ namespace DataMachine\Core\Database\Chat;
 
 use DataMachine\Core\Admin\DateFormatter;
 use DataMachine\Core\Database\BaseRepository;
-use DataMachine\Engine\AI\AgentMessageEnvelope;
+use AgentsAPI\AI\AgentMessageEnvelope;
+use AgentsAPI\Core\Workspace\AgentWorkspaceScope;
+use DataMachine\Core\Workspace\WordPressWorkspaceScope;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
@@ -49,6 +51,8 @@ class Chat extends BaseRepository implements ConversationStoreInterface {
 
 		$sql = "CREATE TABLE {$table_name} (
 			session_id VARCHAR(50) NOT NULL,
+			workspace_type VARCHAR(50) NOT NULL,
+			workspace_id VARCHAR(191) NOT NULL,
 			user_id BIGINT(20) UNSIGNED NOT NULL,
 			agent_id BIGINT(20) UNSIGNED NULL,
 			title VARCHAR(100) NULL,
@@ -61,18 +65,59 @@ class Chat extends BaseRepository implements ConversationStoreInterface {
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 			last_read_at DATETIME NULL,
 			expires_at DATETIME NULL,
+			transcript_lock_token VARCHAR(64) NULL,
+			transcript_lock_expires_at DATETIME NULL,
 			PRIMARY KEY  (session_id),
+			KEY workspace (workspace_type, workspace_id),
 			KEY user_id (user_id),
 			KEY agent_id (agent_id),
 			KEY mode (mode),
 			KEY user_mode (user_id, mode),
 			KEY created_at (created_at),
 			KEY updated_at (updated_at),
-			KEY expires_at (expires_at)
+			KEY expires_at (expires_at),
+			KEY transcript_lock_expires_at (transcript_lock_expires_at)
 		) {$charset_collate};";
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		dbDelta( $sql );
+	}
+
+	/**
+	 * Ensure workspace columns exist for Agents API-scoped transcript rows.
+	 *
+	 * Existing rows are stamped with the current site scope because the prefixed
+	 * WordPress table was already site-local before this generic boundary existed.
+	 *
+	 * @return void
+	 */
+	public static function ensure_workspace_columns(): void {
+		global $wpdb;
+
+		$table_name = self::get_prefixed_table_name();
+		$workspace  = WordPressWorkspaceScope::current();
+
+		if ( ! self::column_exists( $table_name, 'workspace_type', $wpdb ) ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.NotPrepared
+			$wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD COLUMN workspace_type VARCHAR(50) NULL', $table_name ) );
+		}
+
+		if ( ! self::column_exists( $table_name, 'workspace_id', $wpdb ) ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.NotPrepared
+			$wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD COLUMN workspace_id VARCHAR(191) NULL', $table_name ) );
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.NotPrepared
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE %i SET workspace_type = %s, workspace_id = %s WHERE workspace_type IS NULL OR workspace_type = %s OR workspace_id IS NULL OR workspace_id = %s',
+				$table_name,
+				$workspace->workspace_type,
+				$workspace->workspace_id,
+				'',
+				''
+			)
+		);
 	}
 
 	/**
@@ -176,6 +221,27 @@ class Chat extends BaseRepository implements ConversationStoreInterface {
 	}
 
 	/**
+	 * Ensure transcript lock columns exist for Agents API single-writer locking.
+	 *
+	 * @return void
+	 */
+	public static function ensure_transcript_lock_columns(): void {
+		global $wpdb;
+
+		$table_name = self::get_prefixed_table_name();
+
+		if ( ! self::column_exists( $table_name, 'transcript_lock_token', $wpdb ) ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.NotPrepared
+			$wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD COLUMN transcript_lock_token VARCHAR(64) NULL', $table_name ) );
+		}
+
+		if ( ! self::column_exists( $table_name, 'transcript_lock_expires_at', $wpdb ) ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.NotPrepared
+			$wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD COLUMN transcript_lock_expires_at DATETIME NULL', $table_name ) );
+		}
+	}
+
+	/**
 	 * Check if table exists
 	 *
 	 * @return bool True if table exists
@@ -218,37 +284,45 @@ class Chat extends BaseRepository implements ConversationStoreInterface {
 	/**
 	 * Create new chat session
 	 *
-	 * @param int    $user_id  WordPress user ID
-	 * @param array  $metadata Optional session metadata
-	 * @param string $mode  Execution mode (chat, pipeline, system)
+	 * @param AgentWorkspaceScope $workspace Workspace owning the session.
+	 * @param int                 $user_id   WordPress user ID.
+	 * @param int                 $agent_id  Agent ID.
+	 * @param array               $metadata  Optional session metadata.
+	 * @param string              $context   Execution context (chat, pipeline, system).
 	 * @return string Session ID (UUID)
 	 */
-	public function create_session(
-		int $user_id,
-		int $agent_id = 0,
-		array $metadata = array(),
-		string $mode = 'chat'
-	): string {
+	public function create_session( ...$args ): string {
 		global $wpdb;
+
+		list( $workspace, $user_id, $agent_id, $metadata, $context ) = self::normalize_create_session_args( $args );
 
 		$session_id = wp_generate_uuid4();
 		$table_name = self::get_prefixed_table_name();
+		$metadata   = array_merge(
+			$metadata,
+			array(
+				'workspace_type' => $workspace->workspace_type,
+				'workspace_id'   => $workspace->workspace_id,
+			)
+		);
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
 		$result = $wpdb->insert(
 			$table_name,
 			array(
-				'session_id' => $session_id,
-				'user_id'    => $user_id,
-				'agent_id'   => $agent_id > 0 ? $agent_id : null,
-				'messages'   => wp_json_encode( array() ),
-				'metadata'   => wp_json_encode( $metadata ),
-				'provider'   => null,
-				'model'      => null,
-				'mode'       => $mode,
-				'expires_at' => null,
+				'session_id'     => $session_id,
+				'workspace_type' => $workspace->workspace_type,
+				'workspace_id'   => $workspace->workspace_id,
+				'user_id'        => $user_id,
+				'agent_id'       => $agent_id > 0 ? $agent_id : null,
+				'messages'       => wp_json_encode( array() ),
+				'metadata'       => wp_json_encode( $metadata ),
+				'provider'       => null,
+				'model'          => null,
+				'mode'           => $context,
+				'expires_at'     => null,
 			),
-			array( '%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s' )
+			array( '%s', '%s', '%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s' )
 		);
 
 		if ( false === $result ) {
@@ -259,7 +333,7 @@ class Chat extends BaseRepository implements ConversationStoreInterface {
 				array(
 					'user_id' => $user_id,
 					'error'   => $wpdb->last_error,
-					'mode'    => $mode,
+					'mode'    => $context,
 				)
 			);
 			return '';
@@ -273,11 +347,63 @@ class Chat extends BaseRepository implements ConversationStoreInterface {
 				'session_id' => $session_id,
 				'user_id'    => $user_id,
 				'agent_id'   => $agent_id,
-				'mode'       => $mode,
+				'mode'       => $context,
 			)
 		);
 
 		return $session_id;
+	}
+
+	/**
+	 * Normalize create-session arguments across current and workspace-aware contracts.
+	 *
+	 * @param array $args Raw method arguments.
+	 * @return array{0:AgentWorkspaceScope,1:int,2:int,3:array,4:string}
+	 */
+	private static function normalize_create_session_args( array $args ): array {
+		if ( isset( $args[0] ) && $args[0] instanceof AgentWorkspaceScope ) {
+			return array(
+				$args[0],
+				(int) ( $args[1] ?? 0 ),
+				(int) ( $args[2] ?? 0 ),
+				is_array( $args[3] ?? null ) ? $args[3] : array(),
+				(string) ( $args[4] ?? 'chat' ),
+			);
+		}
+
+		return array(
+			WordPressWorkspaceScope::current(),
+			(int) ( $args[0] ?? 0 ),
+			(int) ( $args[1] ?? 0 ),
+			is_array( $args[2] ?? null ) ? $args[2] : array(),
+			(string) ( $args[3] ?? 'chat' ),
+		);
+	}
+
+	/**
+	 * Normalize pending-session arguments across current and workspace-aware contracts.
+	 *
+	 * @param array $args Raw method arguments.
+	 * @return array{0:AgentWorkspaceScope,1:int,2:int,3:string,4:int|null}
+	 */
+	private static function normalize_recent_pending_session_args( array $args ): array {
+		if ( isset( $args[0] ) && $args[0] instanceof AgentWorkspaceScope ) {
+			return array(
+				$args[0],
+				(int) ( $args[1] ?? 0 ),
+				(int) ( $args[2] ?? 600 ),
+				(string) ( $args[3] ?? 'chat' ),
+				isset( $args[4] ) ? (int) $args[4] : null,
+			);
+		}
+
+		return array(
+			WordPressWorkspaceScope::current(),
+			(int) ( $args[0] ?? 0 ),
+			(int) ( $args[1] ?? 600 ),
+			(string) ( $args[2] ?? 'chat' ),
+			isset( $args[3] ) ? (int) $args[3] : null,
+		);
 	}
 
 	/**
@@ -389,6 +515,90 @@ class Chat extends BaseRepository implements ConversationStoreInterface {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Acquire an advisory transcript lock for a chat session.
+	 *
+	 * @param string $session_id   Session UUID.
+	 * @param int    $ttl_seconds  Lock TTL in seconds.
+	 * @return string|null Lock token, or null when another active writer owns it.
+	 */
+	public function acquire_session_lock( string $session_id, int $ttl_seconds = 300 ): ?string {
+		global $wpdb;
+
+		$table_name = self::get_prefixed_table_name();
+		$token      = $this->generate_lock_token();
+		$now        = current_time( 'mysql', true );
+		$expires_at = gmdate( 'Y-m-d H:i:s', strtotime( $now ) + max( 1, $ttl_seconds ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared
+		$result = $wpdb->query(
+			$wpdb->prepare(
+				'UPDATE %i
+				SET transcript_lock_token = %s, transcript_lock_expires_at = %s
+				WHERE session_id = %s
+				AND (
+					transcript_lock_token IS NULL
+					OR transcript_lock_token = %s
+					OR transcript_lock_expires_at IS NULL
+					OR transcript_lock_expires_at <= %s
+				)',
+				$table_name,
+				$token,
+				$expires_at,
+				$session_id,
+				'',
+				$now
+			)
+		);
+
+		if ( 1 !== (int) $result ) {
+			return null;
+		}
+
+		return $token;
+	}
+
+	/**
+	 * Release an advisory transcript lock if the active token matches.
+	 *
+	 * @param string $session_id  Session UUID.
+	 * @param string $lock_token  Token returned by acquire_session_lock().
+	 * @return bool True when the active lock was released.
+	 */
+	public function release_session_lock( string $session_id, string $lock_token ): bool {
+		global $wpdb;
+
+		$table_name = self::get_prefixed_table_name();
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared
+		$result = $wpdb->query(
+			$wpdb->prepare(
+				'UPDATE %i
+				SET transcript_lock_token = NULL, transcript_lock_expires_at = NULL
+				WHERE session_id = %s AND transcript_lock_token = %s',
+				$table_name,
+				$session_id,
+				$lock_token
+			)
+		);
+
+		return 1 === (int) $result;
+	}
+
+	/**
+	 * Generate an opaque lock ownership token.
+	 *
+	 * @return string
+	 */
+	private function generate_lock_token(): string {
+		try {
+			return bin2hex( random_bytes( 32 ) );
+		} catch ( \Throwable $e ) {
+			unset( $e );
+			return str_replace( '-', '', wp_generate_uuid4() ) . str_replace( '.', '', uniqid( '', true ) );
+		}
 	}
 
 	/**
@@ -676,25 +886,25 @@ class Chat extends BaseRepository implements ConversationStoreInterface {
 	 * instead of creating a new one.
 	 *
 	 * @since 0.9.8
-	 * @param int      $user_id WordPress user ID
-	 * @param int      $seconds Lookback window in seconds (default 600 = 10 minutes)
-	 * @param string $mode Mode filter
-	 * @param int|null $token_id Optional token ID for login-scoped deduplication.
+	 * @param AgentWorkspaceScope $workspace Workspace owning the session.
+	 * @param int                 $user_id   WordPress user ID.
+	 * @param int                 $seconds   Lookback window in seconds (default 600 = 10 minutes).
+	 * @param string              $context   Context filter.
+	 * @param int|null            $token_id  Optional token ID for login-scoped deduplication.
 	 * @return array|null Session data or null if none found
 	 */
-	public function get_recent_pending_session(
-		int $user_id,
-		int $seconds = 600,
-		string $mode = 'chat',
-		?int $token_id = null
-	): ?array {
+	public function get_recent_pending_session( ...$args ): ?array {
 		global $wpdb;
+
+		list( $workspace, $user_id, $seconds, $context, $token_id ) = self::normalize_recent_pending_session_args( $args );
 
 		$table_name  = self::get_prefixed_table_name();
 		$cutoff_time = gmdate( 'Y-m-d H:i:s', time() - $seconds );
 
 		$query  = "SELECT * FROM %i
-				WHERE user_id = %d
+				WHERE workspace_type = %s
+				AND workspace_id = %s
+				AND user_id = %d
 				AND mode = %s
 				AND created_at >= %s
 				AND (
@@ -703,11 +913,17 @@ class Chat extends BaseRepository implements ConversationStoreInterface {
 				)";
 		$params = array(
 			$table_name,
+			$workspace->workspace_type,
+			$workspace->workspace_id,
 			$user_id,
-			$mode,
+			$context,
 			$cutoff_time,
 			'%"status":"processing"%',
 		);
+
+		$query   .= ' AND metadata LIKE %s AND metadata LIKE %s';
+		$params[] = '%"workspace_type":"' . $wpdb->esc_like( $workspace->workspace_type ) . '"%';
+		$params[] = '%"workspace_id":"' . $wpdb->esc_like( $workspace->workspace_id ) . '"%';
 
 		if ( null !== $token_id ) {
 			$query   .= ' AND metadata LIKE %s';

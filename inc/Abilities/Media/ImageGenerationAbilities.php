@@ -2,7 +2,7 @@
 /**
  * Image Generation Abilities
  *
- * Primitive ability for AI image generation via Replicate API.
+ * Primitive ability for AI image generation via wp-ai-client.
  * All image generation — tools, CLI, REST, chat — flows through this ability.
  *
  * Includes optional prompt refinement: uses Data Machine's configured AI provider
@@ -16,7 +16,6 @@
 namespace DataMachine\Abilities\Media;
 
 use DataMachine\Abilities\PermissionHelper;
-use DataMachine\Core\HttpClient;
 use DataMachine\Core\PluginSettings;
 use DataMachine\Engine\AI\RequestBuilder;
 use DataMachine\Engine\Tasks\TaskScheduler;
@@ -33,11 +32,18 @@ class ImageGenerationAbilities {
 	const CONFIG_OPTION = 'datamachine_image_generation_config';
 
 	/**
-	 * Default model identifier on Replicate.
+	 * Default provider identifier for wp-ai-client image generation.
 	 *
 	 * @var string
 	 */
-	const DEFAULT_MODEL = 'google/imagen-4-fast';
+	const DEFAULT_PROVIDER = 'openai';
+
+	/**
+	 * Default model identifier for wp-ai-client image generation.
+	 *
+	 * @var string
+	 */
+	const DEFAULT_MODEL = 'gpt-image-1';
 
 	/**
 	 * Default aspect ratio for generated images.
@@ -70,7 +76,7 @@ class ImageGenerationAbilities {
 				'datamachine/generate-image',
 				array(
 					'label'               => 'Generate Image',
-					'description'         => 'Generate an image using AI models via Replicate API',
+					'description'         => 'Generate an image using AI models via wp-ai-client',
 					'category'            => 'datamachine-media',
 					'input_schema'        => array(
 						'type'       => 'object',
@@ -82,7 +88,11 @@ class ImageGenerationAbilities {
 							),
 							'model'           => array(
 								'type'        => 'string',
-								'description' => 'Replicate model identifier (default: google/imagen-4-fast).',
+								'description' => 'wp-ai-client model identifier. Defaults to the image generation tool configuration.',
+							),
+							'provider'        => array(
+								'type'        => 'string',
+								'description' => 'wp-ai-client provider identifier. Defaults to the image generation tool configuration.',
 							),
 							'aspect_ratio'    => array(
 								'type'        => 'string',
@@ -114,12 +124,12 @@ class ImageGenerationAbilities {
 					'output_schema'       => array(
 						'type'       => 'object',
 						'properties' => array(
-							'success'       => array( 'type' => 'boolean' ),
-							'pending'       => array( 'type' => 'boolean' ),
-							'job_id'        => array( 'type' => 'integer' ),
-							'prediction_id' => array( 'type' => 'string' ),
-							'message'       => array( 'type' => 'string' ),
-							'error'         => array( 'type' => 'string' ),
+							'success'   => array( 'type' => 'boolean' ),
+							'pending'   => array( 'type' => 'boolean' ),
+							'job_id'    => array( 'type' => 'integer' ),
+							'image_url' => array( 'type' => 'string' ),
+							'message'   => array( 'type' => 'string' ),
+							'error'     => array( 'type' => 'string' ),
 						),
 					),
 					'execute_callback'    => array( self::class, 'generateImage' ),
@@ -137,11 +147,11 @@ class ImageGenerationAbilities {
 	}
 
 	/**
-	 * Generate an image via Replicate API.
+	 * Generate an image via wp-ai-client.
 	 *
 	 * Optionally refines the prompt using Data Machine's configured AI provider,
-	 * then starts a Replicate prediction and hands off to the System Agent
-	 * for async polling and completion.
+	 * then asks wp-ai-client to generate the image and hands off to the System
+	 * Agent for media sideloading and post mutation.
 	 *
 	 * @param array $input Ability input.
 	 * @return array Ability response.
@@ -157,11 +167,28 @@ class ImageGenerationAbilities {
 		}
 
 		$config = self::get_config();
-
-		if ( empty( $config['api_key'] ) ) {
+		if ( empty( $config ) ) {
 			return array(
 				'success' => false,
-				'error'   => 'Image generation not configured. Add a Replicate API key in Settings.',
+				'error'   => 'Image generation not configured. Select a wp-ai-client provider and model in Settings.',
+			);
+		}
+
+		$provider = ! empty( $input['provider'] ) ? sanitize_text_field( $input['provider'] ) : ( $config['default_provider'] ?? self::DEFAULT_PROVIDER );
+		$model    = ! empty( $input['model'] ) ? sanitize_text_field( $input['model'] ) : ( $config['default_model'] ?? self::DEFAULT_MODEL );
+
+		if ( empty( $provider ) || empty( $model ) ) {
+			return array(
+				'success' => false,
+				'error'   => 'Image generation not configured. Select a wp-ai-client provider and model in Settings.',
+			);
+		}
+
+		$unavailable_reason = RequestBuilder::wpAiClientUnavailableReason( $provider );
+		if ( null !== $unavailable_reason ) {
+			return array(
+				'success' => false,
+				'error'   => $unavailable_reason,
 			);
 		}
 
@@ -177,48 +204,74 @@ class ImageGenerationAbilities {
 			// If refinement fails, continue with the original prompt — never block.
 		}
 
-		$model        = ! empty( $input['model'] ) ? sanitize_text_field( $input['model'] ) : ( $config['default_model'] ?? self::DEFAULT_MODEL );
 		$aspect_ratio = ! empty( $input['aspect_ratio'] ) ? sanitize_text_field( $input['aspect_ratio'] ) : ( $config['default_aspect_ratio'] ?? self::DEFAULT_ASPECT_RATIO );
 
 		if ( ! in_array( $aspect_ratio, self::VALID_ASPECT_RATIOS, true ) ) {
 			$aspect_ratio = self::DEFAULT_ASPECT_RATIO;
 		}
 
-		$input_params = self::buildInputParams( $prompt, $aspect_ratio, $model );
+		try {
+			\DataMachine\Engine\AI\WpAiClientCache::install();
 
-		// Start Replicate prediction.
-		$result = HttpClient::post(
-			"https://api.replicate.com/v1/models/{$model}/predictions",
-			array(
-				'timeout' => 30,
-				'headers' => array(
-					'Authorization' => 'Token ' . $config['api_key'],
-					'Content-Type'  => 'application/json',
-				),
-				'body'    => wp_json_encode( array(
-					'input' => $input_params,
-				) ),
-				'context' => 'Image Generation Ability',
-			)
-		);
+			$registry = \WordPress\AiClient\AiClient::defaultRegistry();
+			/** @var callable $has_provider wp-ai-client exposes this through __call() in some versions. */
+			$has_provider = array( $registry, 'hasProvider' );
+			if ( ! call_user_func( $has_provider, $provider ) ) {
+				throw new \InvalidArgumentException( sprintf( 'Provider %s is not registered in wp-ai-client', esc_html( $provider ) ) );
+			}
 
-		if ( ! $result['success'] ) {
+			/** @var callable $provider_id_resolver wp-ai-client exposes this through __call() in some versions. */
+			$provider_id_resolver = array( $registry, 'getProviderId' );
+			$provider_id          = call_user_func( $provider_id_resolver, $provider );
+			$api_key              = \DataMachine\Engine\AI\WpAiClientProviderAdmin::resolveApiKey( $provider );
+			if ( '' !== $api_key ) {
+				$registry->setProviderRequestAuthentication(
+					$provider_id,
+					new \WordPress\AiClient\Providers\Http\DTO\ApiKeyRequestAuthentication( $api_key )
+				);
+			}
+
+			/** @var callable $model_resolver wp-ai-client exposes this through __call() in some versions. */
+			$model_resolver = array( $registry, 'getProviderModel' );
+			$image_builder  = \wp_ai_client_prompt( $prompt )
+				->using_provider( $provider_id )
+				->using_model( call_user_func( $model_resolver, $provider_id, $model, null ) );
+
+			/** @var callable $file_type_setter wp-ai-client prompt builders expose this through __call() in some versions. */
+			$file_type_setter = array( $image_builder, 'as_output_file_type' );
+			$image_builder    = call_user_func( $file_type_setter, \WordPress\AiClient\Files\Enums\FileTypeEnum::remote() );
+			$image_builder    = $image_builder->as_output_media_aspect_ratio( $aspect_ratio );
+
+			$supported = $image_builder->is_supported_for_image_generation();
+			if ( is_wp_error( $supported ) ) {
+				$image_file = $supported;
+			} elseif ( ! $supported ) {
+				$image_file = new \WP_Error( 'wp_ai_client_image_unsupported', sprintf( 'wp-ai-client model "%s" does not support image generation for provider "%s"', $model, $provider_id ) );
+			} else {
+				$image_file = $image_builder->generate_image();
+			}
+		} catch ( \Throwable $e ) {
+			$image_file = new \WP_Error( 'wp_ai_client_image_exception', 'wp-ai-client image generation threw: ' . $e->getMessage() );
+		}
+
+		if ( $image_file instanceof \WP_Error || ! is_object( $image_file ) ) {
 			return array(
 				'success' => false,
-				'error'   => 'Failed to start image generation: ' . ( $result['error'] ?? 'Unknown error' ),
+				'error'   => 'Failed to generate image: ' . ( $image_file instanceof \WP_Error ? $image_file->get_error_message() : 'wp-ai-client returned no image file.' ),
 			);
 		}
 
-		$prediction = json_decode( $result['data'], true );
+		$image_url      = is_callable( array( $image_file, 'getUrl' ) ) ? (string) call_user_func( array( $image_file, 'getUrl' ) ) : '';
+		$image_data_uri = is_callable( array( $image_file, 'getDataUri' ) ) ? (string) call_user_func( array( $image_file, 'getDataUri' ) ) : '';
 
-		if ( json_last_error() !== JSON_ERROR_NONE || empty( $prediction['id'] ) ) {
+		if ( '' === $image_url && '' === $image_data_uri ) {
 			return array(
 				'success' => false,
-				'error'   => 'Invalid response from Replicate API.',
+				'error'   => 'wp-ai-client image generation returned no usable image.',
 			);
 		}
 
-		// Hand off to System Agent for async polling.
+		// Hand off to System Agent for async media handling and post mutation.
 		$context = array();
 		if ( ! empty( $input['pipeline_job_id'] ) ) {
 			$context['pipeline_job_id'] = (int) $input['pipeline_job_id'];
@@ -236,7 +289,9 @@ class ImageGenerationAbilities {
 		$jobId = TaskScheduler::schedule(
 			'image_generation',
 			array(
-				'prediction_id'   => $prediction['id'],
+				'image_url'       => $image_url,
+				'image_data_uri'  => $image_data_uri,
+				'provider'        => $provider,
 				'model'           => $model,
 				'prompt'          => $prompt,
 				'original_prompt' => $original_prompt,
@@ -254,11 +309,11 @@ class ImageGenerationAbilities {
 		}
 
 		return array(
-			'success'       => true,
-			'pending'       => true,
-			'job_id'        => $jobId,
-			'prediction_id' => $prediction['id'],
-			'message'       => "Image generation scheduled (Job #{$jobId}). Model: {$model}, aspect ratio: {$aspect_ratio}."
+			'success'   => true,
+			'pending'   => true,
+			'job_id'    => $jobId,
+			'image_url' => $image_url,
+			'message'   => "Image generation scheduled (Job #{$jobId}). Model: {$model}, aspect ratio: {$aspect_ratio}."
 				. ( $prompt !== $original_prompt ? ' Prompt was refined by AI.' : '' ),
 		);
 	}
@@ -305,14 +360,8 @@ class ImageGenerationAbilities {
 		}
 
 		$messages = array(
-			array(
-				'role'    => 'system',
-				'content' => $style_guide,
-			),
-			array(
-				'role'    => 'user',
-				'content' => $user_message,
-			),
+			\DataMachine\Engine\AI\ConversationManager::buildConversationMessage( 'system', $style_guide ),
+			\DataMachine\Engine\AI\ConversationManager::buildConversationMessage( 'user', $user_message ),
 		);
 
 		$response = RequestBuilder::build(
@@ -324,13 +373,13 @@ class ImageGenerationAbilities {
 			array( 'purpose' => 'image_prompt_refinement' )
 		);
 
-		if ( empty( $response['success'] ) ) {
+		if ( $response instanceof \WP_Error ) {
 			do_action(
 				'datamachine_log',
 				'warning',
 				'Image Generation: Prompt refinement AI request failed',
 				array(
-					'error'      => $response['error'] ?? 'Unknown error',
+					'error'      => $response->get_error_message(),
 					'raw_prompt' => $raw_prompt,
 					'provider'   => $provider,
 				)
@@ -338,7 +387,7 @@ class ImageGenerationAbilities {
 			return null;
 		}
 
-		$refined = trim( $response['data']['content'] ?? '' );
+		$refined = trim( RequestBuilder::resultText( $response ) );
 
 		if ( empty( $refined ) ) {
 			return null;
@@ -416,41 +465,20 @@ class ImageGenerationAbilities {
 	}
 
 	/**
-	 * Build model-specific input parameters for Replicate.
-	 *
-	 * @param string $prompt       Image generation prompt.
-	 * @param string $aspect_ratio Aspect ratio.
-	 * @param string $model        Model identifier.
-	 * @return array Input parameters.
-	 */
-	private static function buildInputParams( string $prompt, string $aspect_ratio, string $model ): array {
-		if ( false !== strpos( $model, 'imagen' ) ) {
-			return array(
-				'prompt'              => $prompt,
-				'aspect_ratio'        => $aspect_ratio,
-				'output_format'       => 'jpg',
-				'safety_filter_level' => 'block_only_high',
-			);
-		}
-
-		// Flux and other models.
-		return array(
-			'prompt'         => $prompt,
-			'num_outputs'    => 1,
-			'aspect_ratio'   => $aspect_ratio,
-			'output_format'  => 'webp',
-			'output_quality' => 90,
-		);
-	}
-
-	/**
 	 * Check if image generation is configured.
 	 *
 	 * @return bool
 	 */
 	public static function is_configured(): bool {
 		$config = self::get_config();
-		return ! empty( $config['api_key'] );
+		if ( empty( $config ) ) {
+			return false;
+		}
+
+		$provider = $config['default_provider'] ?? self::DEFAULT_PROVIDER;
+		$model    = $config['default_model'] ?? self::DEFAULT_MODEL;
+
+		return ! empty( $provider ) && ! empty( $model ) && null === RequestBuilder::wpAiClientUnavailableReason( (string) $provider );
 	}
 
 	/**

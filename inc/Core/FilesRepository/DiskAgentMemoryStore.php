@@ -22,6 +22,14 @@
 
 namespace DataMachine\Core\FilesRepository;
 
+use AgentsAPI\Core\FilesRepository\AgentMemoryListEntry;
+use AgentsAPI\Core\FilesRepository\AgentMemoryMetadata;
+use AgentsAPI\Core\FilesRepository\AgentMemoryQuery;
+use AgentsAPI\Core\FilesRepository\AgentMemoryReadResult;
+use AgentsAPI\Core\FilesRepository\AgentMemoryScope;
+use AgentsAPI\Core\FilesRepository\AgentMemoryStoreCapabilities;
+use AgentsAPI\Core\FilesRepository\AgentMemoryStoreInterface;
+use AgentsAPI\Core\FilesRepository\AgentMemoryWriteResult;
 use DataMachine\Engine\AI\MemoryFileRegistry;
 
 defined( 'ABSPATH' ) || exit;
@@ -40,7 +48,14 @@ class DiskAgentMemoryStore implements AgentMemoryStoreInterface {
 	/**
 	 * @inheritDoc
 	 */
-	public function read( AgentMemoryScope $scope ): AgentMemoryReadResult {
+	public function capabilities(): AgentMemoryStoreCapabilities {
+		return AgentMemoryStoreCapabilities::none();
+	}
+
+	/**
+	 * @inheritDoc
+	 */
+	public function read( AgentMemoryScope $scope, array $metadata_fields = AgentMemoryMetadata::FIELDS ): AgentMemoryReadResult {
 		$filepath = $this->resolve_filepath( $scope );
 
 		if ( ! file_exists( $filepath ) ) {
@@ -62,6 +77,8 @@ class DiskAgentMemoryStore implements AgentMemoryStoreInterface {
 			sha1( $content ),
 			$bytes,
 			false === $updated_at ? null : (int) $updated_at,
+			null,
+			$this->capabilities()->unsupported_metadata_fields( $metadata_fields, 'read' )
 		);
 	}
 
@@ -70,7 +87,7 @@ class DiskAgentMemoryStore implements AgentMemoryStoreInterface {
 	 *
 	 * `$if_match` is intentionally ignored — see class docblock.
 	 */
-	public function write( AgentMemoryScope $scope, string $content, ?string $if_match = null ): AgentMemoryWriteResult {
+	public function write( AgentMemoryScope $scope, string $content, ?string $if_match = null, ?AgentMemoryMetadata $metadata = null ): AgentMemoryWriteResult {
 		$filepath = $this->resolve_filepath( $scope );
 		$dir      = dirname( $filepath );
 
@@ -92,7 +109,12 @@ class DiskAgentMemoryStore implements AgentMemoryStoreInterface {
 		FilesystemHelper::make_group_writable( $filepath );
 
 		$bytes = strlen( $content );
-		return AgentMemoryWriteResult::ok( sha1( $content ), $bytes );
+		return AgentMemoryWriteResult::ok(
+			sha1( $content ),
+			$bytes,
+			null,
+			null === $metadata ? array() : $this->capabilities()->unsupported_metadata_fields( array_keys( $metadata->to_array() ), 'persist' )
+		);
 	}
 
 	/**
@@ -125,7 +147,7 @@ class DiskAgentMemoryStore implements AgentMemoryStoreInterface {
 	/**
 	 * @inheritDoc
 	 */
-	public function list_layer( AgentMemoryScope $scope_query ): array {
+	public function list_layer( AgentMemoryScope $scope_query, ?AgentMemoryQuery $query = null ): array {
 		$layer_dir = $this->resolve_layer_directory( $scope_query );
 
 		if ( ! is_dir( $layer_dir ) ) {
@@ -151,6 +173,8 @@ class DiskAgentMemoryStore implements AgentMemoryStoreInterface {
 				$scope_query->layer,
 				(int) filesize( $path ),
 				false === $mtime ? null : (int) $mtime,
+				null,
+				$this->unsupported_query_fields( $query )
 			);
 		}
 
@@ -164,7 +188,7 @@ class DiskAgentMemoryStore implements AgentMemoryStoreInterface {
 	 * Returned filenames are relative paths from the layer root,
 	 * including the prefix (e.g. `daily/2026/04/17.md`).
 	 */
-	public function list_subtree( AgentMemoryScope $scope_query, string $prefix ): array {
+	public function list_subtree( AgentMemoryScope $scope_query, string $prefix, ?AgentMemoryQuery $query = null ): array {
 		$prefix = trim( $prefix, '/' );
 		if ( '' === $prefix ) {
 			return array();
@@ -201,6 +225,8 @@ class DiskAgentMemoryStore implements AgentMemoryStoreInterface {
 				$scope_query->layer,
 				(int) $file_info->getSize(),
 				false === $mtime ? null : (int) $mtime,
+				null,
+				$this->unsupported_query_fields( $query )
 			);
 		}
 
@@ -211,6 +237,22 @@ class DiskAgentMemoryStore implements AgentMemoryStoreInterface {
 		);
 
 		return $entries;
+	}
+
+	/**
+	 * @return string[]
+	 */
+	private function unsupported_query_fields( ?AgentMemoryQuery $query ): array {
+		if ( null === $query ) {
+			return array();
+		}
+
+		$capabilities = $this->capabilities();
+		return array_values( array_unique( array_merge(
+			$capabilities->unsupported_metadata_fields( $query->metadata_fields, 'read' ),
+			$capabilities->unsupported_metadata_fields( $query->filter_fields(), 'filter' ),
+			null === $query->order_by ? array() : $capabilities->unsupported_metadata_fields( array( $query->order_by ), 'rank' )
+		) ) );
 	}
 
 	// =========================================================================

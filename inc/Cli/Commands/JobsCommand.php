@@ -21,9 +21,10 @@ use DataMachine\Abilities\Job\GetJobsAbility;
 use DataMachine\Abilities\Job\JobsSummaryAbility;
 use DataMachine\Abilities\Job\RecoverStuckJobsAbility;
 use DataMachine\Abilities\Job\RetryJobAbility;
+use DataMachine\Abilities\Job\RunMetricsAbility;
 use DataMachine\Core\Database\Chat\ConversationStoreFactory;
 use DataMachine\Core\Database\Jobs\Jobs;
-use DataMachine\Engine\AI\AgentMessageEnvelope;
+use AgentsAPI\AI\AgentMessageEnvelope;
 use DataMachine\Engine\AI\System\Tasks\SystemTask;
 use DataMachine\Engine\Tasks\TaskRegistry;
 
@@ -103,7 +104,7 @@ class JobsCommand extends BaseCommand {
 			return;
 		}
 
-		WP_CLI::log( sprintf( 'Found %d stuck jobs with job_status in engine_data.', count( $jobs ) ) );
+		WP_CLI::log( sprintf( 'Found %d stuck jobs or stale actions.', count( $jobs ) ) );
 
 		if ( $dry_run ) {
 			WP_CLI::log( 'Dry run - no changes will be made.' );
@@ -130,6 +131,26 @@ class JobsCommand extends BaseCommand {
 				WP_CLI::log( sprintf( 'Would timeout job %d (flow %d)', $job['job_id'], $job['flow_id'] ) );
 			} elseif ( 'timed_out' === $job['status'] ) {
 				WP_CLI::log( sprintf( 'Timed out job %d (flow %d)', $job['job_id'], $job['flow_id'] ) );
+			} elseif ( 'would_reconcile_action' === $job['status'] ) {
+				WP_CLI::log(
+					sprintf(
+						'Would reconcile Action Scheduler action %d for terminal job %d (flow %d, status %s)',
+						$job['action_id'],
+						$job['job_id'],
+						$job['flow_id'],
+						$job['target_status']
+					)
+				);
+			} elseif ( 'reconciled_action' === $job['status'] ) {
+				WP_CLI::log(
+					sprintf(
+						'Reconciled Action Scheduler action %d for terminal job %d (flow %d, status %s)',
+						$job['action_id'],
+						$job['job_id'],
+						$job['flow_id'],
+						$job['target_status']
+					)
+				);
 			}
 		}
 
@@ -444,6 +465,9 @@ class JobsCommand extends BaseCommand {
 		$job                   = $jobs[0];
 		$engine_data           = $job['engine_data'] ?? array();
 		$transcript_session_id = $engine_data['transcript_session_id'] ?? '';
+		if ( empty( $transcript_session_id ) ) {
+			$transcript_session_id = $this->findTranscriptSessionIdForJob( $job_id );
+		}
 
 		if ( empty( $transcript_session_id ) ) {
 			WP_CLI::error(
@@ -500,6 +524,30 @@ class JobsCommand extends BaseCommand {
 		}
 
 		$this->renderTranscriptText( $job_id, (string) $transcript_session_id, $session, $messages, $metadata );
+	}
+
+	/**
+	 * Locate a pipeline transcript by metadata for jobs created before engine_data
+	 * stored transcript_session_id.
+	 *
+	 * @param int $job_id Job ID.
+	 * @return string Transcript session ID, or empty string when none exists.
+	 */
+	private function findTranscriptSessionIdForJob( int $job_id ): string {
+		global $wpdb;
+
+		$table = $wpdb->prefix . 'datamachine_chat_sessions';
+		$like  = '%"job_id":' . $job_id . '%';
+		$row   = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT session_id FROM %i WHERE mode = %s AND metadata LIKE %s ORDER BY created_at DESC LIMIT 1',
+				$table,
+				'pipeline',
+				$like
+			)
+		);
+
+		return is_string( $row ) ? $row : '';
 	}
 
 	/**
@@ -785,7 +833,7 @@ class JobsCommand extends BaseCommand {
 			if ( is_array( $value ) ) {
 				$count             = count( $value );
 				$json              = wp_json_encode( $value );
-				$size              = strlen( $json );
+				$size              = strlen( is_string( $json ) ? $json : '' );
 				$summary[ $label ] = sprintf( 'array (%d items, %s)', $count, size_format( $size ) );
 			} elseif ( is_bool( $value ) ) {
 				$summary[ $label ] = $value ? 'true' : 'false';
@@ -858,6 +906,88 @@ class JobsCommand extends BaseCommand {
 		}
 
 		$this->format_items( $items, array( 'status', 'count' ), $assoc_args );
+	}
+
+	/**
+	 * Show run metrics for a job.
+	 *
+	 * ## OPTIONS
+	 *
+	 * <job_id>
+	 * : The job ID to inspect.
+	 *
+	 * [--format=<format>]
+	 * : Output format.
+	 * ---
+	 * default: table
+	 * options:
+	 *   - table
+	 *   - json
+	 *   - yaml
+	 * ---
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     # Show run metrics for a long backfill parent job
+	 *     wp datamachine jobs metrics 844
+	 *
+	 *     # Machine-readable metrics
+	 *     wp datamachine jobs metrics 844 --format=json
+	 *
+	 * @subcommand metrics
+	 */
+	public function metrics( array $args, array $assoc_args ): void {
+		if ( empty( $args[0] ) || ! is_numeric( $args[0] ) || (int) $args[0] <= 0 ) {
+			WP_CLI::error( 'Job ID is required and must be a positive integer.' );
+			return;
+		}
+
+		$result = ( new RunMetricsAbility() )->execute( array( 'job_id' => (int) $args[0] ) );
+		if ( ! $result['success'] ) {
+			WP_CLI::error( $result['error'] ?? 'Unknown error occurred' );
+			return;
+		}
+
+		$metrics = $result['metrics'] ?? array();
+		$format  = $assoc_args['format'] ?? 'table';
+
+		if ( 'json' === $format ) {
+			WP_CLI::log( wp_json_encode( $metrics, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+			return;
+		}
+
+		if ( 'yaml' === $format ) {
+			/** @phpstan-ignore-next-line Spyc is provided by WP-CLI at runtime. */
+			WP_CLI::log( (string) call_user_func( array( 'Spyc', 'YAMLDump' ), $metrics, false, false, true ) );
+			return;
+		}
+
+		$counts     = $metrics['counts'] ?? array();
+		$children   = $metrics['child_jobs'] ?? array();
+		$timestamps = $metrics['timestamps'] ?? array();
+
+		WP_CLI::log( sprintf( 'Job ID: %d', $metrics['job_id'] ?? 0 ) );
+		WP_CLI::log( sprintf( 'Status: %s', $metrics['status'] ?? '' ) );
+		WP_CLI::log( sprintf( 'Source: %s', $metrics['source'] ?? '' ) );
+		WP_CLI::log( sprintf( 'Label: %s', $metrics['label'] ?? '' ) );
+		WP_CLI::log( sprintf( 'Flow ID: %s', $metrics['flow_id'] ?? 'N/A' ) );
+		WP_CLI::log( sprintf( 'Pipeline ID: %s', $metrics['pipeline_id'] ?? 'N/A' ) );
+		WP_CLI::log( sprintf( 'Started: %s', $timestamps['started_at'] ?? '-' ) );
+		WP_CLI::log( sprintf( 'Last Activity: %s', $timestamps['last_activity_at'] ?? '-' ) );
+		WP_CLI::log( sprintf( 'Completed: %s', $timestamps['completed_at'] ?? '-' ) );
+		WP_CLI::log( sprintf( 'Duration: %s seconds', null === ( $metrics['duration_seconds'] ?? null ) ? '-' : (string) $metrics['duration_seconds'] ) );
+		WP_CLI::log( '' );
+
+		WP_CLI::log( 'Counts:' );
+		foreach ( $counts as $key => $value ) {
+			WP_CLI::log( sprintf( '  %s: %d', $key, (int) $value ) );
+		}
+		WP_CLI::log( '' );
+
+		WP_CLI::log( 'Child Jobs:' );
+		foreach ( $children as $key => $value ) {
+			WP_CLI::log( sprintf( '  %s: %d', $key, (int) $value ) );
+		}
 	}
 
 	/**

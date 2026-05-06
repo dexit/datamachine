@@ -15,11 +15,13 @@
 namespace DataMachine\Abilities\Engine;
 
 use DataMachine\Abilities\StepTypeAbilities;
+use DataMachine\Core\Database\ProcessedItems\ProcessedItems;
 use DataMachine\Core\EngineData;
 use DataMachine\Core\FilesRepository\FileCleanup;
 use DataMachine\Core\FilesRepository\FileRetrieval;
 use DataMachine\Core\JobStatus;
 use DataMachine\Core\Steps\FlowStepConfig;
+use DataMachine\Core\Steps\Step;
 use DataMachine\Engine\StepNavigator;
 
 defined( 'ABSPATH' ) || exit;
@@ -163,6 +165,9 @@ class ExecuteStepAbility {
 
 			$step_class = $step_definition['class'] ?? '';
 			$flow_step  = new $step_class();
+			if ( ! $flow_step instanceof Step ) {
+				throw new \RuntimeException( sprintf( 'Step class "%s" must extend DataMachine\\Core\\Steps\\Step.', $step_class ) );
+			}
 
 			$payload = array(
 				'job_id'       => $job_id,
@@ -172,23 +177,6 @@ class ExecuteStepAbility {
 			);
 
 			$dataPackets = $flow_step->execute( $payload );
-
-			if ( ! is_array( $dataPackets ) ) {
-				do_action(
-					'datamachine_fail_job',
-					$job_id,
-					'step_execution_failure',
-					array(
-						'flow_step_id' => $flow_step_id,
-						'class'        => $step_class,
-						'reason'       => 'non_array_payload_returned',
-					)
-				);
-				return array(
-					'success' => false,
-					'error'   => 'Step returned non-array payload.',
-				);
-			}
 
 			$payload['data'] = $dataPackets;
 			$step_success    = $this->evaluateStepSuccess( $dataPackets, $job_id, $flow_step_id );
@@ -248,9 +236,9 @@ class ExecuteStepAbility {
 	 * @param string     $flow_step_id    Flow step ID.
 	 * @param int        $job_id          Job ID.
 	 * @param array      $engine_snapshot Raw engine snapshot data.
-	 * @return array|null Flow step config or null.
+	 * @return array Flow step config, or an empty array when not found.
 	 */
-	private function resolveFlowStepConfig( EngineData $engine, string $flow_step_id, int $job_id, array $engine_snapshot ): ?array {
+	private function resolveFlowStepConfig( EngineData $engine, string $flow_step_id, int $job_id, array $engine_snapshot ): array {
 		$flow_step_config = $engine->getFlowStepConfig( $flow_step_id );
 
 		if ( ! $flow_step_config ) {
@@ -391,6 +379,8 @@ class ExecuteStepAbility {
 			// Failed overrides should NOT mark items as processed.
 			if ( str_starts_with( $status_override, JobStatus::FAILED ) === false ) {
 				$this->markCompletedItemProcessed( $job_id );
+			} else {
+				$this->releaseInFlightItemClaim( $job_id );
 			}
 			$this->db_jobs->complete_job( $job_id, $status_override );
 
@@ -484,6 +474,7 @@ class ExecuteStepAbility {
 				$transition_route      = self::resolveTransitionRoute( $flow_step_config, $next_flow_step_config, $dataPackets );
 
 				if ( 'fail' === $transition_route['mode'] ) {
+					$transition_failure_reason = $transition_route['reason'] ?? 'transition_route_failed';
 					do_action(
 						'datamachine_fail_job',
 						$job_id,
@@ -492,7 +483,7 @@ class ExecuteStepAbility {
 							'flow_step_id'      => $flow_step_id,
 							'next_flow_step_id' => $next_flow_step_id,
 							'class'             => $step_class,
-							'reason'            => $transition_route['reason'],
+							'reason'            => $transition_failure_reason,
 						)
 					);
 
@@ -500,7 +491,7 @@ class ExecuteStepAbility {
 						'success'      => true,
 						'step_success' => false,
 						'outcome'      => 'failed',
-						'error'        => $transition_route['reason'],
+						'error'        => $transition_failure_reason,
 					);
 				}
 
@@ -599,6 +590,42 @@ class ExecuteStepAbility {
 		}
 
 		// Non-fetch steps: empty data packet is an actual failure.
+		// Some steps (notably AIStep) call datamachine_fail_job with a precise
+		// reason and then return no packets. The defensive check here covers
+		// two shapes:
+		//   - The step's failure was finalized → status starts with `failed`.
+		//   - The step's failure was caught by JobRetryPolicy, which parked the
+		//     job back to `pending` and scheduled a retry via Action Scheduler.
+		// In both cases the per-step failure has already been routed; firing
+		// `datamachine_fail_job` again here would double-record the failure
+		// and (when the second reason is non-retryable) trigger
+		// `cleanup_job_data_packets` even though a retry is still pending,
+		// orphaning the next attempt with no input data.
+		$prior_status = $this->getPriorTerminalStatus( $job_id );
+		if ( null !== $prior_status ) {
+			do_action(
+				'datamachine_log',
+				'debug',
+				'Step returned no data after job was already marked failed or rescheduled for retry',
+				array(
+					'job_id'       => $job_id,
+					'pipeline_id'  => $pipeline_id,
+					'flow_id'      => $flow_id,
+					'flow_step_id' => $flow_step_id,
+					'step_class'   => $step_class,
+					'step_type'    => $step_type,
+					'job_status'   => $prior_status,
+				)
+			);
+
+			return array(
+				'success'      => true,
+				'step_success' => false,
+				'outcome'      => 'failed',
+				'error'        => $prior_status,
+			);
+		}
+
 		do_action(
 			'datamachine_log',
 			'error',
@@ -628,6 +655,70 @@ class ExecuteStepAbility {
 			'step_success' => false,
 			'outcome'      => 'failed',
 		);
+	}
+
+	/**
+	 * Return a status marker when the step's prior failure is already routed.
+	 *
+	 * Some steps, notably AIStep, call datamachine_fail_job with a precise
+	 * failure reason and then return no packets. Do not reclassify that empty
+	 * packet list as a generic execution failure.
+	 *
+	 * Returns the persisted status string when:
+	 *   - The job is already in a `failed` status (terminal failure routed).
+	 *   - The job is in `pending` status with a future-dated retry recorded in
+	 *     engine_data['retry']['next_retry_at'] — i.e. JobRetryPolicy already
+	 *     accepted ownership of this failure and parked the job for retry.
+	 *
+	 * @param int $job_id Job ID.
+	 * @return string|null Status marker, or null when no prior route exists.
+	 */
+	private function getPriorTerminalStatus( int $job_id ): ?string {
+		if ( ! isset( $this->db_jobs ) ) {
+			return null;
+		}
+
+		$job = $this->db_jobs->get_job( $job_id );
+		if ( ! is_array( $job ) ) {
+			return null;
+		}
+
+		$status = $job['status'] ?? '';
+		if ( ! is_string( $status ) || '' === $status ) {
+			return null;
+		}
+
+		if ( JobStatus::isStatusFailure( $status ) ) {
+			return $status;
+		}
+
+		if ( JobStatus::PENDING === JobStatus::fromString( $status )->getBaseStatus() && $this->hasPendingRetry( $job_id ) ) {
+			return $status;
+		}
+
+		return null;
+	}
+
+	/**
+	 * Check whether the job has a future-dated retry recorded in engine_data.
+	 *
+	 * `JobRetryPolicy::recordRetry` writes `engine_data['retry']['next_retry_at']`
+	 * as an ISO 8601 timestamp when scheduling a retry. Treat any non-empty value
+	 * here as authoritative — the scheduler may not have fired yet, but the policy
+	 * has already taken ownership of the failure path.
+	 *
+	 * @param int $job_id Job ID.
+	 * @return bool
+	 */
+	private function hasPendingRetry( int $job_id ): bool {
+		if ( ! function_exists( 'datamachine_get_engine_data' ) ) {
+			return false;
+		}
+
+		$engine_data = datamachine_get_engine_data( $job_id );
+		$retry       = is_array( $engine_data['retry'] ?? null ) ? $engine_data['retry'] : array();
+
+		return ! empty( $retry['next_retry_at'] );
 	}
 
 	/**
@@ -693,6 +784,43 @@ class ExecuteStepAbility {
 				'fetch_flow_step_id' => $fetch_flow_step_id,
 			)
 		);
+	}
+
+	/**
+	 * Release this job's in-flight source claim after a failed status override.
+	 *
+	 * Most failures flow through datamachine_fail_job, whose handler releases
+	 * claims centrally. Failed status overrides complete the job directly, so
+	 * they need the same release here.
+	 *
+	 * @param int $job_id Failed job ID.
+	 */
+	private function releaseInFlightItemClaim( int $job_id ): void {
+		$engine_data = datamachine_get_engine_data( $job_id );
+
+		$item_identifier = $engine_data['item_identifier'] ?? null;
+		$source_type     = $engine_data['source_type'] ?? null;
+
+		if ( empty( $item_identifier ) || empty( $source_type ) ) {
+			return;
+		}
+
+		$fetch_flow_step_id = null;
+		$flow_config        = $engine_data['flow_config'] ?? array();
+
+		foreach ( $flow_config as $step_id => $config ) {
+			$step_type = $config['step_type'] ?? '';
+			if ( in_array( $step_type, array( 'fetch', 'event_import' ), true ) ) {
+				$fetch_flow_step_id = $step_id;
+				break;
+			}
+		}
+
+		if ( empty( $fetch_flow_step_id ) ) {
+			return;
+		}
+
+		( new ProcessedItems() )->release_claim( $fetch_flow_step_id, (string) $source_type, (string) $item_identifier );
 	}
 
 	/**
@@ -829,7 +957,7 @@ class ExecuteStepAbility {
 	 * Extract failure reason from step packets.
 	 *
 	 * @param array  $dataPackets Data packets from step execution.
-	 * @param string $default Default reason when none found.
+	 * @param string $default_value Default reason when none found.
 	 * @return string
 	 */
 	private function getFailureReasonFromPackets( array $dataPackets, string $default_value ): string {

@@ -22,7 +22,9 @@ use DataMachine\Core\Database\Chat\ConversationRetentionInterface;
 use DataMachine\Core\Database\Chat\ConversationSessionIndexInterface;
 use DataMachine\Core\Database\Chat\ConversationStoreFactory;
 use DataMachine\Core\Database\Chat\ConversationStoreInterface;
-use DataMachine\Core\Database\Chat\ConversationTranscriptStoreInterface;
+use AgentsAPI\Core\Database\Chat\ConversationTranscriptLockInterface;
+use AgentsAPI\Core\Database\Chat\ConversationTranscriptStoreInterface;
+use AgentsAPI\Core\Workspace\AgentWorkspaceScope;
 use WP_UnitTestCase;
 
 class ConversationStoreFactoryTest extends WP_UnitTestCase {
@@ -47,6 +49,7 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 
 		$this->assertInstanceOf( ConversationStoreInterface::class, $store );
 		$this->assertInstanceOf( ConversationTranscriptStoreInterface::class, $store );
+		$this->assertInstanceOf( ConversationTranscriptLockInterface::class, $store );
 		$this->assertInstanceOf( ConversationSessionIndexInterface::class, $store );
 		$this->assertInstanceOf( ConversationReadStateInterface::class, $store );
 		$this->assertInstanceOf( ConversationRetentionInterface::class, $store );
@@ -62,9 +65,52 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 		$this->assertSame( ConversationStoreFactory::get(), $store );
 	}
 
+	public function test_builtin_chat_store_honors_transcript_lock_contract(): void {
+		global $wpdb;
+
+		$store      = ConversationStoreFactory::get();
+		$session_id = $store->create_session( 1, 0, array(), 'chat' );
+
+		$token_a = $store->acquire_session_lock( $session_id, 300 );
+		$token_b = $store->acquire_session_lock( $session_id, 300 );
+
+		$this->assertIsString( $token_a );
+		$this->assertNotSame( '', $token_a );
+		$this->assertNull( $token_b );
+
+		$wpdb->update(
+			$store->get_table_name(),
+			array( 'transcript_lock_expires_at' => gmdate( 'Y-m-d H:i:s', time() - 60 ) ),
+			array( 'session_id' => $session_id ),
+			array( '%s' ),
+			array( '%s' )
+		);
+
+		$token_c = $store->acquire_session_lock( $session_id, 300 );
+		$this->assertIsString( $token_c );
+		$this->assertNotSame( $token_a, $token_c );
+		$this->assertFalse( $store->release_session_lock( $session_id, $token_a ) );
+		$this->assertTrue( $store->release_session_lock( $session_id, $token_c ) );
+		$this->assertTrue(
+			$store->update_session(
+				$session_id,
+				array(
+					array(
+						'role'    => 'user',
+						'content' => 'Hello',
+					),
+				),
+				array( 'status' => 'completed' ),
+				'openai',
+				'gpt-test'
+			)
+		);
+	}
+
 	public function test_conversation_store_interface_is_composed_from_narrow_contracts(): void {
 		$reflection = new \ReflectionClass( ConversationStoreInterface::class );
 		$expected   = array(
+			ConversationTranscriptLockInterface::class,
 			ConversationTranscriptStoreInterface::class,
 			ConversationSessionIndexInterface::class,
 			ConversationReadStateInterface::class,
@@ -93,6 +139,7 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 
 		$this->assertSame( $memory_store, $resolved );
 		$this->assertInstanceOf( ConversationTranscriptStoreInterface::class, $resolved );
+		$this->assertInstanceOf( ConversationTranscriptLockInterface::class, $resolved );
 		$this->assertInstanceOf( ConversationSessionIndexInterface::class, $resolved );
 		$this->assertInstanceOf( ConversationReadStateInterface::class, $resolved );
 		$this->assertInstanceOf( ConversationRetentionInterface::class, $resolved );
@@ -114,6 +161,7 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 
 		$this->assertSame( $memory_store, $resolved );
 		$this->assertInstanceOf( ConversationTranscriptStoreInterface::class, $resolved );
+		$this->assertInstanceOf( ConversationTranscriptLockInterface::class, $resolved );
 	}
 
 	public function test_misbehaving_filter_falls_back_to_default(): void {
@@ -186,9 +234,9 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 		$today     = gmdate( 'Y-m-d' );
 		$yesterday = gmdate( 'Y-m-d', time() - DAY_IN_SECONDS );
 
-		$a = $store->create_session( $user );
-		$b = $store->create_session( $user );
-		$c = $store->create_session( $user );
+		$a = $store->create_session( $this->workspace(), $user );
+		$b = $store->create_session( $this->workspace(), $user );
+		$c = $store->create_session( $this->workspace(), $user );
 
 		$ref      = new \ReflectionClass( $store );
 		$sessions = $ref->getProperty( 'sessions' );
@@ -229,9 +277,9 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'size_mb', $metrics );
 		$this->assertSame( 0, $metrics['rows'] );
 
-		$store->create_session( 1 );
-		$store->create_session( 1 );
-		$store->create_session( 2 );
+		$store->create_session( $this->workspace(), 1 );
+		$store->create_session( $this->workspace(), 1 );
+		$store->create_session( $this->workspace(), 2 );
 
 		$metrics = $store->get_storage_metrics();
 		$this->assertSame( 3, $metrics['rows'] );
@@ -256,6 +304,7 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 	 */
 	private function persist_fixture_transcript( ConversationTranscriptStoreInterface $store ): array {
 		$session_id = $store->create_session(
+			$this->workspace(),
 			5,
 			7,
 			array(
@@ -305,7 +354,7 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 		);
 		ConversationStoreFactory::reset();
 
-		$session_id = $store->create_session( 7, 0, array(), 'chat' );
+		$session_id = $store->create_session( $this->workspace(), 7, 0, array(), 'chat' );
 		$ref        = new \ReflectionClass( $store );
 		$sessions   = $ref->getProperty( 'sessions' );
 		$sessions->setAccessible( true );
@@ -326,7 +375,7 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 		wp_set_current_user( $user_id );
 
 		// Seed the in-memory store with a session under the target user.
-		$session_id = $memory_store->create_session( $user_id, 0, array(), 'chat' );
+		$session_id = $memory_store->create_session( $this->workspace(), $user_id, 0, array(), 'chat' );
 		$memory_store->update_session(
 			$session_id,
 			array(
@@ -360,5 +409,9 @@ class ConversationStoreFactoryTest extends WP_UnitTestCase {
 		$this->assertCount( 1, $result['sessions'] );
 		$this->assertSame( $session_id, $result['sessions'][0]['session_id'] );
 		$this->assertSame( 'hello', $result['sessions'][0]['first_message'] );
+	}
+
+	private function workspace(): AgentWorkspaceScope {
+		return AgentWorkspaceScope::from_parts( 'site', 'https://example.test' );
 	}
 }

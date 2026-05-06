@@ -27,6 +27,7 @@ use DataMachine\Abilities\PermissionHelper;
 use DataMachine\Core\Database\Agents\Agents;
 use DataMachine\Core\Database\Agents\AgentTokens;
 use DataMachine\Engine\AI\IterationBudgetRegistry;
+use AgentsAPI\AI\AgentExecutionPrincipal;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
@@ -75,11 +76,14 @@ class AgentAuthMiddleware {
 			return null; // Not our token — pass through to WordPress/other auth.
 		}
 
-		// Resolve token hash against database.
-		$tokens_repo  = new AgentTokens();
-		$token_record = $tokens_repo->resolve_token( $raw_token );
+		$request = self::current_rest_request();
 
-		if ( ! $token_record ) {
+		// Resolve token through the generic Agents API token contract.
+		$tokens_repo   = new AgentTokens();
+		$authenticator = new \WP_Agent_Token_Authenticator( $tokens_repo, self::TOKEN_PREFIX );
+		$principal     = $authenticator->authenticate_bearer_token( $raw_token, AgentExecutionPrincipal::REQUEST_CONTEXT_REST, array(), $request );
+
+		if ( ! $principal ) {
 			do_action(
 				'datamachine_log',
 				'warning',
@@ -94,8 +98,9 @@ class AgentAuthMiddleware {
 			);
 		}
 
-		$agent_id = (int) $token_record['agent_id'];
-		$token_id = (int) $token_record['token_id'];
+		$agent_id = (int) $principal->effective_agent_id;
+		$token_id = (int) $principal->token_id;
+		$token    = $tokens_repo->get_token( $token_id );
 
 		// Verify agent exists.
 		$agents_repo = new Agents();
@@ -122,19 +127,16 @@ class AgentAuthMiddleware {
 			);
 		}
 
-		// Track token usage.
-		$tokens_repo->touch_last_used( $token_id );
-
-		// Parse cross-site caller context from A2A headers (no-op for non-A2A requests).
-		$request      = self::current_rest_request();
-		$inbound_ctx  = $request !== null
-			? CallerContext::fromRequest( $request )
-			: new CallerContext();
+		// Agents API parses cross-site caller context during token auth so malformed
+		// caller headers fail closed before any agent work runs.
+		$inbound_ctx = $principal->caller_context instanceof \WP_Agent_Caller_Context
+			? $principal->caller_context
+			: \WP_Agent_Caller_Context::top_of_chain();
 
 		// Enforce chain_depth budget on the incoming call. Depth >= ceiling
 		// means this call is the Nth+1 hop in a chain that has already
 		// exhausted its budget — reject before running any work.
-		$depth_budget = IterationBudgetRegistry::create( 'chain_depth', $inbound_ctx->chainDepth() );
+		$depth_budget = IterationBudgetRegistry::create( 'chain_depth', $inbound_ctx->chain_depth );
 
 		if ( $depth_budget->exceeded() ) {
 			do_action(
@@ -149,7 +151,7 @@ class AgentAuthMiddleware {
 						'ceiling'    => $depth_budget->ceiling(),
 						'current'    => $depth_budget->current(),
 					),
-					$inbound_ctx->toLogContext()
+					$inbound_ctx->to_array()
 				)
 			);
 
@@ -161,11 +163,11 @@ class AgentAuthMiddleware {
 					$depth_budget->ceiling()
 				),
 				array(
-					'status'      => 429,
-					'retry_after' => 60,
-					'chain_id'    => $inbound_ctx->chainId(),
-					'chain_depth' => $inbound_ctx->chainDepth(),
-					'ceiling'     => $depth_budget->ceiling(),
+					'status'                => 429,
+					'retry_after'           => 60,
+					'chain_root_request_id' => $inbound_ctx->chain_root_request_id,
+					'chain_depth'           => $inbound_ctx->chain_depth,
+					'ceiling'               => $depth_budget->ceiling(),
 				)
 			);
 		}
@@ -176,9 +178,10 @@ class AgentAuthMiddleware {
 		wp_set_current_user( $owner_id );
 
 		// Set agent execution context in PermissionHelper.
-		// This adds the agent_id scoping layer and optional capability restrictions.
-		$token_capabilities = $token_record['capabilities'] ?? null;
+		// This adds the agent_id scoping layer and the Agents API capability ceiling.
+		$token_capabilities = $token instanceof \WP_Agent_Token ? $token->allowed_capabilities : null;
 		PermissionHelper::set_agent_context( $agent_id, $owner_id, $token_capabilities, $token_id );
+		PermissionHelper::set_execution_principal( $principal );
 
 		// Expose the caller context for downstream code (ChatOrchestrator,
 		// abilities, logging) that wants to know who's calling and where
@@ -195,10 +198,10 @@ class AgentAuthMiddleware {
 					'agent_slug'           => $agent['agent_slug'],
 					'owner_id'             => $owner_id,
 					'token_id'             => $token_id,
-					'token_label'          => $token_record['label'] ?? '',
+					'token_label'          => $principal->request_metadata['token_label'] ?? '',
 					'has_cap_restrictions' => null !== $token_capabilities,
 				),
-				$inbound_ctx->toLogContext()
+				$inbound_ctx->to_array()
 			)
 		);
 
@@ -210,9 +213,8 @@ class AgentAuthMiddleware {
 	 *
 	 * The `rest_authentication_errors` filter runs before the dispatcher
 	 * assigns the request to a handler, so WP_REST_Request isn't directly
-	 * available here. Fall back to synthesizing one from $_SERVER so
-	 * CallerContext can resolve headers consistently via the same API
-	 * it uses in tests.
+	 * available here. Fall back to synthesizing one from $_SERVER so the
+	 * Agents API caller context parser can resolve headers consistently.
 	 *
 	 * @return \WP_REST_Request|null
 	 */

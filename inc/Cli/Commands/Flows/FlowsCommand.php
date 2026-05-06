@@ -20,6 +20,7 @@ use WP_CLI;
 use DataMachine\Cli\BaseCommand;
 use DataMachine\Cli\AgentResolver;
 use DataMachine\Cli\UserResolver;
+use DataMachine\Cli\Commands\DrainCommand;
 use DataMachine\Core\Steps\FlowStepConfig;
 
 defined( 'ABSPATH' ) || exit;
@@ -84,8 +85,8 @@ class FlowsCommand extends BaseCommand {
 	 * [--timestamp=<unix>]
 	 * : Unix timestamp for delayed execution (future time required).
 	 *
-	 * [--no-drain]
-	 * : Skip the default CLI drain of due datamachine_execute_step actions after an immediate run.
+	 * [--[no-]drain]
+	 * : Drain due Data Machine batch chunk and step actions after an immediate run.
 	 *
 	 * [--pipeline_id=<id>]
 	 * : Pipeline ID for flow creation (create subcommand).
@@ -137,11 +138,24 @@ class FlowsCommand extends BaseCommand {
 	 * [--pipeline=<id>]
 	 * : Pipeline ID for pause/resume scoping.
 	 *
-	 * [--agent=<slug_or_id>]
-	 * : Agent slug or ID for scoping (pause/resume/list).
-	 *
-	 * [--yes]
-	 * : Skip confirmation prompt (delete subcommand).
+ * [--agent=<slug_or_id>]
+ * : Agent slug or ID. For update: set the flow's agent_id.
+ *   For pause/resume/list: scope by agent.
+ *   For reassign: see --from-agent / --to-agent instead.
+ *
+ * [--from-agent=<id>]
+ * : Source agent ID for bulk reassign. Accepts raw numeric ID (need not exist in agents table).
+ *   Mutually exclusive with --where-null.
+ *
+ * [--where-null]
+ * : Target rows where agent_id IS NULL (reassign subcommand).
+ *   Mutually exclusive with --from-agent.
+ *
+ * [--to-agent=<slug_or_id>]
+ * : Destination agent slug or ID for bulk reassign. Must be a valid agent.
+ *
+ * [--yes]
+ * : Skip confirmation prompt (delete/reassign subcommands).
 	 *
 	 * ## EXAMPLES
 	 *
@@ -202,9 +216,21 @@ class FlowsCommand extends BaseCommand {
 	 *     # Resume a single flow
 	 *     wp datamachine flows resume 42
 	 *
-	 *     # Resume all flows for an agent
-	 *     wp datamachine flows resume --agent=my-agent
-	 */
+ *     # Resume all flows for an agent
+ *     wp datamachine flows resume --agent=my-agent
+ *
+ *     # Update flow agent
+ *     wp datamachine flows update 42 --agent=events-bot
+ *
+ *     # Bulk reassign: move orphan flows → events-bot
+ *     wp datamachine flows reassign --where-null --to-agent=events-bot
+ *
+ *     # Bulk reassign: move flows from agent_id=1 → events-bot
+ *     wp datamachine flows reassign --from-agent=1 --to-agent=events-bot
+ *
+ *     # Dry-run reassign
+ *     wp datamachine flows reassign --where-null --to-agent=events-bot --dry-run
+ */
 	public function __invoke( array $args, array $assoc_args ): void {
 		$flow_id     = null;
 		$pipeline_id = null;
@@ -268,6 +294,12 @@ class FlowsCommand extends BaseCommand {
 			return;
 		}
 
+		// Handle 'reassign' subcommand.
+		if ( ! empty( $args ) && 'reassign' === $args[0] ) {
+			$this->reassignFlows( $assoc_args );
+			return;
+		}
+
 		// Handle 'update' subcommand: `flows update 42 --name="New Name"`.
 		if ( ! empty( $args ) && 'update' === $args[0] ) {
 			if ( ! isset( $args[1] ) ) {
@@ -316,7 +348,7 @@ class FlowsCommand extends BaseCommand {
 		} elseif ( ! empty( $args ) && 'run' === $args[0] ) {
 			// Handle 'run' subcommand: `flows run 42`.
 			if ( ! isset( $args[1] ) ) {
-				WP_CLI::error( 'Usage: wp datamachine flows run <flow_id> [--count=N] [--timestamp=T] [--no-drain]' );
+				WP_CLI::error( 'Usage: wp datamachine flows run <flow_id> [--count=N] [--timestamp=T] [--[no-]drain]' );
 				return;
 			}
 			$this->runFlow( (int) $args[1], $assoc_args );
@@ -427,7 +459,7 @@ class FlowsCommand extends BaseCommand {
 
 		// JSON/YAML: output the full flow data including flow_config.
 		if ( 'json' === $format ) {
-			WP_CLI::line( wp_json_encode( $flow, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+			WP_CLI::line( (string) wp_json_encode( $flow, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
 			return;
 		}
 
@@ -481,7 +513,7 @@ class FlowsCommand extends BaseCommand {
 				continue;
 			}
 
-			$step_type = $step_data['step_type'] ?? '';
+			$step_type = (string) $step_data['step_type'];
 			$order     = $step_data['execution_order'] ?? '';
 			$slugs     = FlowStepConfig::getConfiguredHandlerSlugs( $step_data );
 			$configs   = FlowStepConfig::getHandlerConfigs( $step_data );
@@ -718,7 +750,7 @@ class FlowsCommand extends BaseCommand {
 			return $value ? 'true' : 'false';
 		}
 		if ( is_array( $value ) ) {
-			return wp_json_encode( $value );
+			return (string) wp_json_encode( $value );
 		}
 		$str = (string) $value;
 		return $this->truncateValue( $str );
@@ -825,7 +857,7 @@ class FlowsCommand extends BaseCommand {
 		if ( $dry_run ) {
 			WP_CLI::success( 'Validation passed.' );
 			if ( isset( $result['would_create'] ) && 'json' === $format ) {
-				WP_CLI::line( wp_json_encode( $result['would_create'], JSON_PRETTY_PRINT ) );
+				WP_CLI::line( (string) wp_json_encode( $result['would_create'], JSON_PRETTY_PRINT ) );
 			} elseif ( isset( $result['would_create'] ) ) {
 				foreach ( $result['would_create'] as $preview ) {
 					WP_CLI::log(
@@ -858,7 +890,7 @@ class FlowsCommand extends BaseCommand {
 		}
 
 		if ( 'json' === $format && isset( $result['flow_data'] ) ) {
-			WP_CLI::line( wp_json_encode( $result['flow_data'], JSON_PRETTY_PRINT ) );
+			WP_CLI::line( (string) wp_json_encode( $result['flow_data'], JSON_PRETTY_PRINT ) );
 		}
 	}
 
@@ -871,7 +903,7 @@ class FlowsCommand extends BaseCommand {
 	private function runFlow( int $flow_id, array $assoc_args ): void {
 		$count     = isset( $assoc_args['count'] ) ? (int) $assoc_args['count'] : 1;
 		$timestamp = isset( $assoc_args['timestamp'] ) ? (int) $assoc_args['timestamp'] : null;
-		$drain     = ! isset( $assoc_args['no-drain'] );
+		$drain     = \WP_CLI\Utils\get_flag_value( $assoc_args, 'drain', true );
 
 		// Validate count range (1-10).
 		if ( $count < 1 || $count > 10 ) {
@@ -943,41 +975,18 @@ class FlowsCommand extends BaseCommand {
 		}
 
 		if ( $drain ) {
-			$this->drainDueStepActions();
+			$stats = DrainCommand::drain();
+			WP_CLI::log(
+				sprintf(
+					'Drained Data Machine actions: %d batch chunks, %d step executions, %d completions, %d failures, %d due pending remain.',
+					$stats['batch_chunks'],
+					$stats['step_executions'],
+					$stats['completions'],
+					$stats['failures'],
+					$stats['remaining_pending']
+				)
+			);
 		}
-	}
-
-	/**
-	 * Drain due Data Machine step actions after manual CLI flow runs.
-	 *
-	 * Studio/local CLI runs can enqueue due step actions without any HTTP traffic
-	 * to tick Action Scheduler. Reuse Action Scheduler's CLI runner and scope the
-	 * drain to DM step actions so manual `flow run` advances the work it just queued.
-	 */
-	private function drainDueStepActions(): void {
-		if ( ! class_exists( '\WP_CLI' ) || ! method_exists( WP_CLI::class, 'runcommand' ) ) {
-			return;
-		}
-
-		$result = WP_CLI::runcommand(
-			'action-scheduler run --hooks=datamachine_execute_step --quiet',
-			array(
-				'exit_error' => false,
-				'return'     => 'all',
-			)
-		);
-
-		if ( 0 === (int) ( $result->return_code ?? 1 ) ) {
-			WP_CLI::log( 'Drained due Data Machine step actions.' );
-			return;
-		}
-
-		$message = trim( (string) ( $result->stderr ?? '' ) );
-		if ( '' === $message ) {
-			$message = 'Action Scheduler CLI drain failed.';
-		}
-
-		WP_CLI::warning( $message );
 	}
 
 	/**
@@ -1037,6 +1046,7 @@ class FlowsCommand extends BaseCommand {
 		$name           = $assoc_args['name'] ?? null;
 		$scheduling     = $assoc_args['scheduling'] ?? null;
 		$scheduled_at   = $assoc_args['scheduled-at'] ?? null;
+		$has_agent      = isset( $assoc_args['agent'] );
 		$user_message   = isset( $assoc_args['set-user-message'] )
 			? wp_kses_post( wp_unslash( $assoc_args['set-user-message'] ) )
 			: null;
@@ -1055,21 +1065,51 @@ class FlowsCommand extends BaseCommand {
 			return;
 		}
 
-		if ( null === $name && null === $scheduling && null === $user_message && null === $handler_config ) {
-			WP_CLI::error( 'Must provide --name, --scheduling, --set-user-message, --scheduled-at, or --handler-config to update' );
+		if ( null === $name && null === $scheduling && null === $user_message && null === $handler_config && ! $has_agent ) {
+			WP_CLI::error( 'Must provide --name, --scheduling, --set-user-message, --scheduled-at, --handler-config, or --agent to update' );
 			return;
 		}
 
-		// Validate step resolution BEFORE any writes (atomic: fail fast, change nothing).
-		$needs_step = null !== $user_message || null !== $handler_config;
+		// Update agent_id if --agent provided.
+		if ( $has_agent ) {
+			$new_agent_id = AgentResolver::resolve( $assoc_args );
+			if ( null === $new_agent_id ) {
+				WP_CLI::error( 'Could not resolve --agent to a valid agent.' );
+				return;
+			}
 
-		if ( $needs_step && null === $step ) {
-			$resolved = $this->resolveHandlerStep( $flow_id );
-			if ( $resolved['error'] ) {
+			$flows_repo = new \DataMachine\Core\Database\Flows\Flows();
+			$success    = $flows_repo->update_flow( $flow_id, array( 'agent_id' => $new_agent_id ) );
+
+			if ( ! $success ) {
+				WP_CLI::error( 'Failed to update flow agent_id.' );
+				return;
+			}
+
+			WP_CLI::success( sprintf( 'Flow %d agent set to agent_id=%d.', $flow_id, $new_agent_id ) );
+		}
+
+		// Validate step resolution BEFORE any writes (atomic: fail fast, change nothing).
+		// AI prompt updates target AI steps; handler config updates target handler-backed steps.
+		$message_step = $step;
+		$handler_step = $step;
+
+		if ( null !== $user_message && null === $message_step ) {
+			$resolved = $this->resolveAiStep( $flow_id );
+			if ( ! empty( $resolved['error'] ) ) {
 				WP_CLI::error( $resolved['error'] );
 				return;
 			}
-			$step = $resolved['step_id'];
+			$message_step = $resolved['step_id'];
+		}
+
+		if ( null !== $handler_config && null === $handler_step ) {
+			$resolved = $this->resolveHandlerStep( $flow_id );
+			if ( ! empty( $resolved['error'] ) ) {
+				WP_CLI::error( $resolved['error'] );
+				return;
+			}
+			$handler_step = $resolved['step_id'];
 		}
 
 		// Phase 1: Flow-level updates (name, scheduling).
@@ -1112,21 +1152,17 @@ class FlowsCommand extends BaseCommand {
 			$step_ability = new \DataMachine\Abilities\FlowStep\UpdateFlowStepAbility();
 			$step_result  = $step_ability->execute(
 				array(
-					'flow_step_id' => $step,
+					'flow_step_id' => $message_step,
 					'user_message' => $user_message,
 				)
 			);
-
-			if ( is_wp_error( $step_result ) ) {
-				WP_CLI::error( $step_result->get_error_message() );
-			}
 
 			if ( ! $step_result['success'] ) {
 				WP_CLI::error( $step_result['error'] ?? 'Failed to update user_message' );
 				return;
 			}
 
-			WP_CLI::success( 'User message updated for step: ' . $step );
+			WP_CLI::success( 'User message updated for step: ' . $message_step );
 		}
 
 		if ( null !== $handler_config ) {
@@ -1144,7 +1180,7 @@ class FlowsCommand extends BaseCommand {
 			}
 
 			$step_input = array(
-				'flow_step_id'   => $step,
+				'flow_step_id'   => $handler_step,
 				'handler_config' => $unwrapped_config,
 			);
 
@@ -1155,18 +1191,76 @@ class FlowsCommand extends BaseCommand {
 			$step_ability = new \DataMachine\Abilities\FlowStep\UpdateFlowStepAbility();
 			$step_result  = $step_ability->execute( $step_input );
 
-			if ( is_wp_error( $step_result ) ) {
-				WP_CLI::error( $step_result->get_error_message() );
-			}
-
 			if ( ! $step_result['success'] ) {
 				WP_CLI::error( $step_result['error'] ?? 'Failed to update handler config' );
 				return;
 			}
 
 			$updated_keys = implode( ', ', array_keys( $unwrapped_config ) );
-			WP_CLI::success( sprintf( 'Handler config updated for step %s: %s', $step, $updated_keys ) );
+			WP_CLI::success( sprintf( 'Handler config updated for step %s: %s', $handler_step, $updated_keys ) );
 		}
+	}
+
+	/**
+	 * Resolve the AI step for a flow when --step is not provided.
+	 *
+	 * @param int $flow_id Flow ID.
+	 * @return array{step_id: string|null, error: string|null}
+	 */
+	private function resolveAiStep( int $flow_id ): array {
+		global $wpdb;
+
+		$flow = $wpdb->get_row(
+			$wpdb->prepare(
+				"SELECT flow_config FROM {$wpdb->prefix}datamachine_flows WHERE flow_id = %d",
+				$flow_id
+			),
+			ARRAY_A
+		);
+
+		if ( ! $flow ) {
+			return array(
+				'step_id' => null,
+				'error'   => 'Flow not found',
+			);
+		}
+
+		$flow_config = json_decode( $flow['flow_config'], true );
+		if ( empty( $flow_config ) ) {
+			return array(
+				'step_id' => null,
+				'error'   => 'Flow has no steps',
+			);
+		}
+
+		$ai_steps = array();
+		foreach ( $flow_config as $step_id => $step_data ) {
+			if ( 'ai' === ( $step_data['step_type'] ?? '' ) ) {
+				$ai_steps[] = $step_id;
+			}
+		}
+
+		if ( empty( $ai_steps ) ) {
+			return array(
+				'step_id' => null,
+				'error'   => 'Flow has no AI steps',
+			);
+		}
+
+		if ( count( $ai_steps ) > 1 ) {
+			return array(
+				'step_id' => null,
+				'error'   => sprintf(
+					'Flow has multiple AI steps. Use --step=<id> to specify. Available: %s',
+					implode( ', ', $ai_steps )
+				),
+			);
+		}
+
+		return array(
+			'step_id' => $ai_steps[0],
+			'error'   => null,
+		);
 	}
 
 	/**
@@ -1226,10 +1320,6 @@ class FlowsCommand extends BaseCommand {
 			$handler_configs = FlowStepConfig::getHandlerConfigs( $step_data );
 
 			foreach ( $handler_configs as $hconfig ) {
-				if ( ! is_array( $hconfig ) ) {
-					continue;
-				}
-
 				// Coordinates (location field with lat,lon).
 				if ( ! empty( $hconfig['location'] ) && strpos( $hconfig['location'], ',' ) !== false ) {
 					$loc     = $hconfig['location'];
@@ -1245,7 +1335,7 @@ class FlowsCommand extends BaseCommand {
 				// Source URL — show domain only.
 				if ( ! empty( $hconfig['source_url'] ) ) {
 					$host    = wp_parse_url( $hconfig['source_url'], PHP_URL_HOST );
-					$parts[] = $host ?: $hconfig['source_url'];
+					$parts[] = $host ? $host : $hconfig['source_url'];
 				}
 
 				// Venue/source name.
@@ -1257,7 +1347,7 @@ class FlowsCommand extends BaseCommand {
 				$feed_url = $hconfig['feed_url'] ?? $hconfig['url'] ?? '';
 				if ( $feed_url && empty( $hconfig['source_url'] ) ) {
 					$host    = wp_parse_url( $feed_url, PHP_URL_HOST );
-					$parts[] = $host ?: $feed_url;
+					$parts[] = $host ? $host : $feed_url;
 				}
 
 				// Taxonomy term selections (any taxonomy_*_selection key).
@@ -1278,7 +1368,7 @@ class FlowsCommand extends BaseCommand {
 			$summary = mb_substr( $summary, 0, 57 ) . '...';
 		}
 
-		return $summary ?: '—';
+		return '' !== $summary ? $summary : '—';
 	}
 
 	/**
@@ -1348,12 +1438,9 @@ class FlowsCommand extends BaseCommand {
 			}
 
 			$handler_configs = FlowStepConfig::getHandlerConfigs( $step_data );
-			if ( ! is_array( $handler_configs ) ) {
-				continue;
-			}
 
 			foreach ( $handler_configs as $handler_slug => $handler_config ) {
-				if ( ! is_array( $handler_config ) || ! array_key_exists( 'max_items', $handler_config ) ) {
+				if ( ! array_key_exists( 'max_items', $handler_config ) ) {
 					continue;
 				}
 
@@ -1485,7 +1572,7 @@ class FlowsCommand extends BaseCommand {
 				continue;
 			}
 
-			$step_type = $step['step_type'] ?? '';
+			$step_type = (string) $step['step_type'];
 
 			$slugs   = FlowStepConfig::getConfiguredHandlerSlugs( $step );
 			$configs = FlowStepConfig::getHandlerConfigs( $step );
@@ -1501,7 +1588,7 @@ class FlowsCommand extends BaseCommand {
 					if ( is_string( $v ) && strlen( $v ) > 30 ) {
 						$v = substr( $v, 0, 27 ) . '...';
 					}
-					$config_summary[] = "{$k}=" . ( is_array( $v ) ? wp_json_encode( $v ) : $v );
+					$config_summary[] = "{$k}=" . ( is_array( $v ) ? (string) wp_json_encode( $v ) : $v );
 				}
 
 				$rows[] = array(
@@ -1668,7 +1755,7 @@ class FlowsCommand extends BaseCommand {
 		}
 
 		if ( 'json' === $format ) {
-			WP_CLI::line( wp_json_encode( $current_files, JSON_PRETTY_PRINT ) );
+			WP_CLI::line( (string) wp_json_encode( $current_files, JSON_PRETTY_PRINT ) );
 			return;
 		}
 
@@ -1714,7 +1801,7 @@ class FlowsCommand extends BaseCommand {
 
 		$format = $assoc_args['format'] ?? 'table';
 		if ( 'json' === $format ) {
-			WP_CLI::line( wp_json_encode( $result, JSON_PRETTY_PRINT ) );
+			WP_CLI::line( (string) wp_json_encode( $result, JSON_PRETTY_PRINT ) );
 		} else {
 			foreach ( $result['flows'] ?? array() as $detail ) {
 				WP_CLI::log( sprintf( '  Flow %d: %s', $detail['flow_id'], $detail['status'] ) );
@@ -1754,7 +1841,7 @@ class FlowsCommand extends BaseCommand {
 
 		$format = $assoc_args['format'] ?? 'table';
 		if ( 'json' === $format ) {
-			WP_CLI::line( wp_json_encode( $result, JSON_PRETTY_PRINT ) );
+			WP_CLI::line( (string) wp_json_encode( $result, JSON_PRETTY_PRINT ) );
 		} else {
 			foreach ( $result['flows'] ?? array() as $detail ) {
 				$line = sprintf( '  Flow %d: %s', $detail['flow_id'], $detail['status'] );
@@ -1832,5 +1919,102 @@ class FlowsCommand extends BaseCommand {
 		}
 
 		return array( 'interval' => $scheduling );
+	}
+
+	/**
+	 * Bulk-reassign agent_id on flows.
+	 *
+	 * Requires exactly one of --from-agent or --where-null, plus --to-agent.
+	 *
+	 * @param array $assoc_args Associative arguments.
+	 */
+	private function reassignFlows( array $assoc_args ): void {
+		$has_from = isset( $assoc_args['from-agent'] );
+		$has_null = isset( $assoc_args['where-null'] );
+		$has_to   = isset( $assoc_args['to-agent'] );
+		$dry_run  = isset( $assoc_args['dry-run'] );
+		$skip     = isset( $assoc_args['yes'] );
+		$format   = $assoc_args['format'] ?? 'table';
+
+		if ( ! $has_to ) {
+			WP_CLI::error( '--to-agent is required.' );
+			return;
+		}
+
+		if ( ! $has_from && ! $has_null ) {
+			WP_CLI::error( 'Must provide --from-agent=<id> or --where-null to specify which flows to reassign.' );
+			return;
+		}
+
+		if ( $has_from && $has_null ) {
+			WP_CLI::error( '--from-agent and --where-null are mutually exclusive.' );
+			return;
+		}
+
+		// Resolve --to-agent through AgentResolver (must be a valid agent).
+		$to_agent_id = AgentResolver::resolve( array( 'agent' => $assoc_args['to-agent'] ) );
+		if ( null === $to_agent_id ) {
+			WP_CLI::error( 'Could not resolve --to-agent to a valid agent.' );
+			return;
+		}
+
+		// Parse --from-agent as raw integer (may reference a stale/non-existent agent_id).
+		$from_agent_id = null;
+		if ( $has_from ) {
+			$from_agent_id = absint( $assoc_args['from-agent'] );
+			if ( $from_agent_id <= 0 ) {
+				WP_CLI::error( '--from-agent must be a positive integer.' );
+				return;
+			}
+			if ( $from_agent_id === $to_agent_id ) {
+				WP_CLI::error( '--from-agent and --to-agent resolve to the same agent_id.' );
+				return;
+			}
+		}
+
+		$flows_repo = new \DataMachine\Core\Database\Flows\Flows();
+		$flow_count = $flows_repo->count_by_agent_id( $from_agent_id );
+
+		$source_label = null === $from_agent_id ? 'NULL' : (string) $from_agent_id;
+
+		if ( 0 === $flow_count ) {
+			WP_CLI::warning( sprintf( 'No flows found with agent_id=%s. Nothing to do.', $source_label ) );
+			return;
+		}
+
+		WP_CLI::log( sprintf(
+			'Found %d flow(s) with agent_id=%s → reassign to agent_id=%d.',
+			$flow_count,
+			$source_label,
+			$to_agent_id
+		) );
+
+		if ( $dry_run ) {
+			WP_CLI::success( 'Dry-run complete. No changes made.' );
+			return;
+		}
+
+		if ( ! $skip ) {
+			WP_CLI::confirm( sprintf(
+				'Reassign %d flow(s) from agent_id=%s to agent_id=%d?',
+				$flow_count,
+				$source_label,
+				$to_agent_id
+			) );
+		}
+
+		$flows_updated = $flows_repo->reassign_agent_id( $from_agent_id, $to_agent_id );
+
+		if ( $flows_updated < 0 ) {
+			WP_CLI::error( 'Database error during flow reassignment.' );
+			return;
+		}
+
+		WP_CLI::success( sprintf(
+			'Done. %d flow(s) reassigned from agent_id=%s to agent_id=%d.',
+			$flows_updated,
+			$source_label,
+			$to_agent_id
+		) );
 	}
 }

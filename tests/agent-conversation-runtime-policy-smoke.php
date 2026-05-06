@@ -47,18 +47,35 @@ if ( ! function_exists( 'wp_json_encode' ) ) {
 	}
 }
 
-require_once __DIR__ . '/bootstrap-unit.php';
+if ( ! function_exists( 'sanitize_key' ) ) {
+	function sanitize_key( $key ): string {
+		return strtolower( preg_replace( '/[^a-zA-Z0-9_\-]/', '', (string) $key ) ?? '' );
+	}
+}
 
-use DataMachine\Engine\AI\AIConversationLoop;
-use DataMachine\Engine\AI\AgentConversationCompletionDecision;
-use DataMachine\Engine\AI\AgentConversationCompletionPolicyInterface;
-use DataMachine\Engine\AI\AgentConversationTranscriptPersisterInterface;
+if ( ! function_exists( 'get_option' ) ) {
+	function get_option( string $_option, $default = false ) {
+		return $default;
+	}
+}
+
+require_once __DIR__ . '/bootstrap-unit.php';
+require_once __DIR__ . '/Unit/Support/WpAiClientTestDoubles.php';
+
+use AgentsAPI\AI\AgentConversationCompletionDecision;
+use AgentsAPI\AI\AgentConversationCompletionPolicyInterface;
+use AgentsAPI\AI\AgentConversationRequest;
+use AgentsAPI\AI\AgentConversationTranscriptPersisterInterface;
 use DataMachine\Engine\AI\DataMachineHandlerCompletionPolicy;
+use DataMachine\Tests\Unit\Support\WpAiClientTestDouble;
+
+use function DataMachine\Engine\AI\datamachine_run_conversation;
 
 class RuntimePolicySmokeCompletionPolicy implements AgentConversationCompletionPolicyInterface {
 	public array $calls = array();
 
-	public function recordToolResult( string $tool_name, ?array $tool_def, array $tool_result, string $mode, int $turn_count ): AgentConversationCompletionDecision {
+	public function recordToolResult( string $tool_name, ?array $tool_def, array $tool_result, array $runtime_context, int $turn_count ): AgentConversationCompletionDecision {
+		$mode = (string) ( $runtime_context['mode'] ?? '' );
 		$this->calls[] = compact( 'tool_name', 'tool_def', 'tool_result', 'mode', 'turn_count' );
 
 		return AgentConversationCompletionDecision::complete(
@@ -71,7 +88,11 @@ class RuntimePolicySmokeCompletionPolicy implements AgentConversationCompletionP
 class RuntimePolicySmokeTranscriptPersister implements AgentConversationTranscriptPersisterInterface {
 	public array $calls = array();
 
-	public function persist( array $messages, string $provider, string $model, array $payload, array $result ): string {
+	public function persist( array $messages, AgentConversationRequest $request, array $result ): string {
+		$metadata = $request->metadata();
+		$provider = (string) ( $metadata['provider'] ?? '' );
+		$model    = (string) ( $metadata['model'] ?? '' );
+		$payload  = $request->runtimeContext();
 		$this->calls[] = compact( 'messages', 'provider', 'model', 'payload', 'result' );
 
 		return 'runtime-policy-transcript';
@@ -129,14 +150,14 @@ $first_decision = $handler_policy->recordToolResult(
 	'publish_wordpress',
 	array( 'handler' => 'wordpress_publish' ),
 	array( 'success' => true ),
-	'pipeline',
+	array( 'mode' => 'pipeline' ),
 	1
 );
 $second_decision = $handler_policy->recordToolResult(
 	'publish_pinterest',
 	array( 'handler' => 'pinterest_publish' ),
 	array( 'success' => true ),
-	'pipeline',
+	array( 'mode' => 'pipeline' ),
 	2
 );
 
@@ -151,12 +172,11 @@ $provider_context   = null;
 $completion_policy  = new RuntimePolicySmokeCompletionPolicy();
 $transcript_policy  = new RuntimePolicySmokeTranscriptPersister();
 
-add_filter(
-	'chubes_ai_request',
-	function ( array $request_body, string $provider, $streaming_callback, array $tools, $step_id, array $context ) use ( &$dispatch_count, &$provider_context ) {
-		unset( $request_body, $provider, $streaming_callback, $tools, $step_id );
+WpAiClientTestDouble::reset();
+WpAiClientTestDouble::set_response_callback(
+	function ( array $request_body ) use ( &$dispatch_count, &$provider_context ) {
 		++$dispatch_count;
-		$provider_context = $context;
+		$provider_context = $request_body;
 
 		return array(
 			'success' => true,
@@ -171,12 +191,10 @@ add_filter(
 				'usage'      => array( 'prompt_tokens' => 3, 'completion_tokens' => 2, 'total_tokens' => 5 ),
 			),
 		);
-	},
-	10,
-	6
+	}
 );
 
-$result = ( new AIConversationLoop() )->execute(
+$result = datamachine_run_conversation(
 	array( array( 'role' => 'user', 'content' => 'run one tool' ) ),
 	array(
 		'runtime_policy_tool' => array(
@@ -199,13 +217,13 @@ $result = ( new AIConversationLoop() )->execute(
 );
 
 assert_runtime_policy( 1 === $dispatch_count, 'custom completion policy stopped the loop after one provider request' );
-assert_runtime_policy( true === $result['completed'], 'custom completion policy marked the result complete' );
-assert_runtime_policy( 'runtime-policy-transcript' === ( $result['transcript_session_id'] ?? null ), 'custom transcript persister can attach a transcript session id' );
+assert_runtime_policy( 1 === count( $result['tool_execution_results'] ?? array() ), 'custom completion policy returned one tool result' );
+assert_runtime_policy( 1588 === ( $transcript_policy->calls[0]['payload']['job_id'] ?? null ), 'custom transcript persister receives runtime context' );
 assert_runtime_policy( 1 === count( $completion_policy->calls ), 'custom completion policy received one tool result' );
 assert_runtime_policy( 'runtime_policy_tool' === ( $completion_policy->calls[0]['tool_name'] ?? null ), 'custom completion policy receives tool name' );
 assert_runtime_policy( 1 === count( $transcript_policy->calls ), 'custom transcript persister was called once on success' );
-assert_runtime_policy( ! array_key_exists( 'completion_policy', $provider_context['payload'] ?? array() ), 'completion policy object is stripped before provider dispatch' );
-assert_runtime_policy( ! array_key_exists( 'transcript_persister', $provider_context['payload'] ?? array() ), 'transcript persister object is stripped before provider dispatch' );
+assert_runtime_policy( ! str_contains( wp_json_encode( $provider_context ), 'completion_policy' ), 'completion policy object is stripped before provider dispatch' );
+assert_runtime_policy( ! str_contains( wp_json_encode( $provider_context ), 'transcript_persister' ), 'transcript persister object is stripped before provider dispatch' );
 assert_runtime_policy( runtime_policy_logs_contain( 'RuntimePolicySmoke: custom policy completed' ), 'completion policy diagnostic message is logged by the adapter' );
 
 if ( runtime_policy_failure_count() > 0 ) {

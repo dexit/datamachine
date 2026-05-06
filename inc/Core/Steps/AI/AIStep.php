@@ -11,11 +11,12 @@ use DataMachine\Core\Steps\FlowStepConfig;
 use DataMachine\Core\Steps\AI\ToolPolicy\PipelineToolPolicyArgs;
 use DataMachine\Core\Steps\StepTypeRegistrationTrait;
 use DataMachine\Core\Steps\QueueableTrait;
-use DataMachine\Engine\AI\AIConversationLoop;
 use DataMachine\Engine\AI\ConversationManager;
 use DataMachine\Engine\AI\PipelineTranscriptPolicy;
 use DataMachine\Engine\AI\Tools\ToolExecutor;
 use DataMachine\Engine\AI\Tools\ToolPolicyResolver;
+
+use function DataMachine\Engine\AI\datamachine_run_conversation;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
@@ -184,36 +185,34 @@ class AIStep extends Step {
 		if ( $engine_image && file_exists( $engine_image ) ) {
 			$file_path = $engine_image;
 			$file_info = wp_check_filetype( $engine_image );
-			$mime_type = $file_info['type'] ?? '';
+			$mime_type = is_string( $file_info['type'] ) ? $file_info['type'] : '';
 		}
 
 		$messages = array();
 
 		if ( ! empty( $this->dataPackets ) ) {
-			$messages[] = array(
-				'role'    => 'user',
-				'content' => wp_json_encode( array( 'data_packets' => self::sanitizeDataPacketsForAi( $this->dataPackets ) ), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ),
+			$data_packet_content = wp_json_encode( array( 'data_packets' => self::sanitizeDataPacketsForAi( $this->dataPackets ) ), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE );
+			$messages[]          = ConversationManager::buildConversationMessage(
+				'user',
+				false === $data_packet_content ? '' : $data_packet_content
 			);
 		}
 
 		if ( $file_path && file_exists( $file_path ) ) {
-			$messages[] = array(
-				'role'    => 'user',
-				'content' => array(
+			$messages[] = ConversationManager::buildConversationMessage(
+				'user',
+				array(
 					array(
 						'type'      => 'file',
 						'file_path' => $file_path,
-						'mime_type' => $mime_type ?? '',
+						'mime_type' => $mime_type,
 					),
-				),
+				)
 			);
 		}
 
 		if ( ! empty( $user_message ) ) {
-			$messages[] = array(
-				'role'    => 'user',
-				'content' => $user_message,
-			);
+			$messages[] = ConversationManager::buildConversationMessage( 'user', $user_message );
 		}
 
 		$pipeline_step_id = $this->flow_step_config['pipeline_step_id'];
@@ -231,19 +230,21 @@ class AIStep extends Step {
 		// Resolution order: flow > pipeline > site option (default false).
 		// The boolean is threaded through $payload so the loop doesn't need
 		// to repeat the lookup every turn.
-		$persist_transcript = PipelineTranscriptPolicy::shouldPersist( $this->engine );
+		$transcript_consent_decision = PipelineTranscriptPolicy::decision( $this->engine );
+		$persist_transcript          = $transcript_consent_decision->is_allowed();
 
 		$payload = array(
-			'job_id'             => $this->job_id,
-			'flow_step_id'       => $this->flow_step_id,
-			'step_id'            => $pipeline_step_id,
-			'data'               => $this->dataPackets,
-			'engine'             => $this->engine,
-			'user_id'            => $user_id,
-			'agent_id'           => $agent_id,
-			'pipeline_id'        => $job_snapshot['pipeline_id'] ?? null,
-			'flow_id'            => $job_snapshot['flow_id'] ?? null,
-			'persist_transcript' => $persist_transcript,
+			'job_id'                      => $this->job_id,
+			'flow_step_id'                => $this->flow_step_id,
+			'step_id'                     => $pipeline_step_id,
+			'data'                        => $this->dataPackets,
+			'engine'                      => $this->engine,
+			'user_id'                     => $user_id,
+			'agent_id'                    => $agent_id,
+			'pipeline_id'                 => $job_snapshot['pipeline_id'] ?? null,
+			'flow_id'                     => $job_snapshot['flow_id'] ?? null,
+			'persist_transcript'          => $persist_transcript,
+			'transcript_consent_decision' => $transcript_consent_decision->to_array(),
 		);
 
 		$navigator             = new \DataMachine\Engine\StepNavigator();
@@ -357,8 +358,8 @@ class AIStep extends Step {
 		}
 
 		try {
-			// Execute conversation loop via runtime-adapter-aware entry point.
-			$loop_result = AIConversationLoop::run(
+			// Execute conversation loop via agents-api substrate.
+			$loop_result = datamachine_run_conversation(
 				$messages,
 				$available_tools,
 				$provider_name,
@@ -395,9 +396,12 @@ class AIStep extends Step {
 				$this->job_id,
 				'ai_processing_failed',
 				array(
-					'flow_step_id' => $this->flow_step_id,
-					'ai_error'     => $loop_result['error'],
-					'ai_provider'  => $provider_name,
+					'flow_step_id'        => $this->flow_step_id,
+					'ai_error'            => $loop_result['error'],
+					'ai_provider'         => $provider_name,
+					'retry_after'         => $loop_result['retry_after'] ?? null,
+					'retry_after_seconds' => $loop_result['retry_after_seconds'] ?? null,
+					'headers'             => is_array( $loop_result['headers'] ?? null ) ? $loop_result['headers'] : array(),
 				)
 			);
 			return array();

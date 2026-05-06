@@ -3,7 +3,7 @@
  * Plugin Name:     Data Machine
  * Plugin URI:      https://wordpress.org/plugins/data-machine/
  * Description:     AI-powered WordPress plugin for automated content workflows with visual pipeline builder and multi-provider AI integration.
- * Version:           0.102.3
+ * Version:           0.104.0
  * Requires at least: 6.9
  * Requires PHP:     8.2
  * Author:          Chris Huber, extrachill
@@ -21,12 +21,19 @@ if ( ! datamachine_check_requirements() ) {
 	return;
 }
 
-define( 'DATAMACHINE_VERSION', '0.102.3' );
+define( 'DATAMACHINE_VERSION', '0.104.0' );
 
 define( 'DATAMACHINE_PATH', plugin_dir_path( __FILE__ ) );
 define( 'DATAMACHINE_URL', plugin_dir_url( __FILE__ ) );
 
 require_once __DIR__ . '/vendor/autoload.php';
+
+if ( ! defined( 'AGENTS_API_LOADED' ) ) {
+	$datamachine_agents_api_bootstrap = __DIR__ . '/vendor/automattic/agents-api/agents-api.php';
+	if ( file_exists( $datamachine_agents_api_bootstrap ) ) {
+		require_once $datamachine_agents_api_bootstrap;
+	}
+}
 
 // WP-CLI integration
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
@@ -231,6 +238,7 @@ function datamachine_run_datamachine_plugin() {
 	new \DataMachine\Abilities\Job\ProblemFlowsAbility();
 	new \DataMachine\Abilities\Job\RecoverStuckJobsAbility();
 	new \DataMachine\Abilities\Job\JobsSummaryAbility();
+	new \DataMachine\Abilities\Job\RunMetricsAbility();
 	new \DataMachine\Abilities\Job\FailJobAbility();
 	new \DataMachine\Abilities\Job\RetryJobAbility();
 	new \DataMachine\Abilities\LogAbilities();
@@ -284,6 +292,7 @@ function datamachine_run_datamachine_plugin() {
 	// ActionPolicy + unified pending-action resolver. Content abilities register
 	// themselves on `datamachine_pending_action_handlers` via
 	// inc/Abilities/Content/ContentActionHandlers.php (required above).
+	new \DataMachine\Engine\AI\Actions\PendingActionInspectionAbility();
 	new \DataMachine\Engine\AI\Actions\ResolvePendingActionAbility();
 	new \DataMachine\Engine\AI\Actions\ResolvePendingAction();
 
@@ -482,8 +491,11 @@ add_action(
 			return;
 		}
 		\DataMachine\Core\Database\Chat\Chat::ensure_mode_column();
+		\DataMachine\Core\Database\Chat\Chat::ensure_workspace_columns();
 		\DataMachine\Core\Database\Chat\Chat::ensure_agent_id_column();
 		\DataMachine\Core\Database\Chat\Chat::ensure_last_read_at_column();
+		\DataMachine\Core\Database\Chat\Chat::ensure_transcript_lock_columns();
+		\DataMachine\Engine\AI\Actions\PendingActionStore::ensure_workspace_columns();
 	},
 	6
 );
@@ -663,8 +675,12 @@ function datamachine_activate_for_site() {
 
 	\DataMachine\Core\Database\Chat\Chat::create_table();
 	\DataMachine\Core\Database\Chat\Chat::ensure_mode_column();
+	\DataMachine\Core\Database\Chat\Chat::ensure_workspace_columns();
 	\DataMachine\Core\Database\Chat\Chat::ensure_agent_id_column();
 	\DataMachine\Core\Database\Chat\Chat::ensure_last_read_at_column();
+	\DataMachine\Core\Database\Chat\Chat::ensure_transcript_lock_columns();
+
+	\DataMachine\Engine\AI\Actions\PendingActionStore::create_table();
 
 	// Ensure default agent memory files exist.
 	// During activation the Abilities API is unavailable (init already fired before
@@ -682,11 +698,12 @@ function datamachine_activate_for_site() {
 	// `datamachine_db_version` option (#1301).
 	datamachine_run_schema_migrations();
 
-	// Regenerate SITE.md with enriched content and clean up legacy SiteContext transient.
-	// Activation-only — SITE.md regeneration is heavy and shouldn't fire on
+	// Regenerate every composable memory file (SITE.md, NETWORK.md, AGENTS.md, …)
+	// from their registered sections, and clean up the legacy SiteContext transient.
+	// Activation-only — composable regeneration is heavy and shouldn't fire on
 	// every deploy (the version-gated runtime path is for schema-shape drift,
 	// not opportunistic content refresh).
-	datamachine_regenerate_site_md();
+	\DataMachine\Engine\AI\ComposableFileGenerator::regenerate_all();
 	delete_transient( 'datamachine_site_context_data' );
 
 	// Clean up legacy per-agent-type log level options (idempotent).

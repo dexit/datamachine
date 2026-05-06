@@ -88,11 +88,9 @@ Total injection capped at 100KB. Files sorted newest-first.
 
 Full conversation history persisted in the database. Sessions survive page reloads and browser restarts. Agent-scoped via `agent_id` column. Configurable retention with automatic cleanup via Action Scheduler.
 
-### 4. Pipeline Context — Workflow Memory
+### 4. Pipeline and Flow Memory — Workflow Context
 
-**Location:** `wp-content/uploads/datamachine-files/pipeline-{id}/context/`
-
-Per-pipeline documents that provide background for specific workflows. Job execution data stored as JSON creates an audit trail of what was processed — transient working memory cleaned by retention policies.
+Pipeline and flow memory is selected from registered memory files instead of a dedicated `pipeline-{id}/context/` directory. Pipeline-level selections are injected by **PipelineMemoryFilesDirective** (Priority 40); flow-level selections are additive and injected by **FlowMemoryFilesDirective** (Priority 45). Job execution data stored as JSON creates an audit trail of what was processed — transient working memory cleaned by retention policies.
 
 ## Multi-Agent Architecture
 
@@ -119,9 +117,9 @@ The `datamachine_agent_access` table implements role-based access:
 ### Resource Scoping
 
 All major resources carry an `agent_id` column:
-- **Pipelines** — each pipeline belongs to an agent
-- **Flows** — each flow belongs to an agent
-- **Jobs** — each job runs under an agent
+- **Pipelines** — each pipeline belongs to an agent-scoped owner
+- **Flows** — each flow belongs to an agent-scoped owner
+- **Jobs** — each job runs under an agent-scoped owner
 - **Chat sessions** — each conversation is agent-scoped
 
 The `PermissionHelper` class provides methods for agent-level access checks:
@@ -151,7 +149,24 @@ The difference between useful memory and noise is structure. Each core file has 
 
 ### SITE.md — Site-Wide Context (Shared Layer)
 
-SITE.md contains information about the WordPress installation that all agents share. It is **read-only** — fully regenerated from live WordPress data whenever site structure changes (plugin activations, theme switches, post/term lifecycle, option updates). To extend it, use the `datamachine_site_scaffold_content` filter.
+SITE.md contains information about the WordPress installation that all agents share. It is **read-only and composable** — fully regenerated from live WordPress data whenever site structure changes (plugin activations, theme switches, post/term lifecycle, option updates).
+
+To extend it, register a section against the `SectionRegistry` (the same API used for `AGENTS.md`):
+
+```php
+add_action( 'datamachine_sections', function () {
+    \DataMachine\Engine\AI\SectionRegistry::register(
+        'SITE.md',
+        'my-platform',
+        35, // priority — slots between post-types (30) and taxonomies (40)
+        function () {
+            return "## My Platform\n- Custom context line 1\n- Custom context line 2";
+        }
+    );
+} );
+```
+
+The legacy `datamachine_site_scaffold_content` whole-string filter still fires on the assembled output for backwards compatibility but emits a `_doing_it_wrong` deprecation notice. Migrate to `SectionRegistry::register()`.
 
 **Sections generated:**
 
@@ -313,16 +328,15 @@ Data Machine uses a **directive system** — a priority-ordered chain that injec
 
 | Priority | Directive | Context | What It Injects |
 |----------|-----------|---------|-----------------|
-| 10 | `PipelineCoreDirective` | Pipeline | Base Data Machine identity for pipelines |
-| **15** | **`ChatAgentDirective`** | **Chat** | **Chat agent identity and instructions** |
 | **20** | **`CoreMemoryFilesDirective`** | **All** | **SITE.md, RULES.md (shared), SOUL.md, MEMORY.md (agent), USER.md (user) + custom registry files** |
-| **20** | **`SystemAgentDirective`** | **System** | **System task agent identity** |
+| **22** | **`AgentModeDirective`** | **All** | **Mode-specific guidance for chat, pipeline, and system** |
+| 25 | `CallerContextDirective` | All, cross-site only | Authenticated A2A caller identity |
+| 35 | `AgentDailyMemoryDirective` | Chat, pipeline | Recent daily archives when enabled |
+| 35 | `ClientContextDirective` | All | Client-reported context such as current screen or edited post |
 | 40 | `PipelineMemoryFilesDirective` | Pipeline | Per-pipeline selected additional files |
 | **45** | **`ChatPipelinesDirective`** | **Chat** | **Pipeline/flow context for chat** |
 | **45** | **`FlowMemoryFilesDirective`** | **Pipeline** | **Per-flow selected additional files** |
-| **46** | **`DailyMemorySelectorDirective`** | **Pipeline** | **Selected daily memory files based on flow config** |
 | 50 | `PipelineSystemPromptDirective` | Pipeline | Workflow instructions |
-| 80 | `SiteContextDirective` | All | WordPress metadata (filterable/replaceable) |
 
 ### Core Memory Files (Priority 20)
 
@@ -739,7 +753,7 @@ add_filter('datamachine_directives', function($directives) {
     $directives[] = [
         'class'       => 'MyPlugin\Directives\CustomMemory',
         'priority'    => 25, // Between core memory files (20) and pipeline memory (40)
-        'agent_types' => ['pipeline'],
+        'modes'      => ['pipeline'],
     ];
     return $directives;
 });

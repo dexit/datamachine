@@ -10,6 +10,8 @@
 
 namespace DataMachine\Engine\AI;
 
+use AgentsAPI\AI\AgentMessageEnvelope;
+
 defined( 'ABSPATH' ) || exit;
 
 class ProviderRequestAssembler {
@@ -17,7 +19,7 @@ class ProviderRequestAssembler {
 	/**
 	 * Assemble a provider request without dispatching it.
 	 *
-	 * @param array  $messages   Initial messages array with role/content.
+	 * @param array  $messages   Initial canonical message envelopes.
 	 * @param string $provider   AI provider name.
 	 * @param string $model      Model identifier.
 	 * @param array  $tools      Raw tools array from filters or runtime declarations.

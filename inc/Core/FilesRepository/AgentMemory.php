@@ -19,6 +19,13 @@
 
 namespace DataMachine\Core\FilesRepository;
 
+use AgentsAPI\Core\FilesRepository\AgentMemoryListEntry;
+use AgentsAPI\Core\FilesRepository\AgentMemoryMetadata;
+use AgentsAPI\Core\FilesRepository\AgentMemoryReadResult;
+use AgentsAPI\Core\FilesRepository\AgentMemoryScope;
+use AgentsAPI\Core\FilesRepository\AgentMemoryStoreInterface;
+use AgentsAPI\Core\FilesRepository\AgentMemoryWriteResult;
+use DataMachine\Core\Workspace\WordPressWorkspaceScope;
 use DataMachine\Engine\AI\MemoryFileRegistry;
 
 defined( 'ABSPATH' ) || exit;
@@ -67,9 +74,12 @@ class AgentMemory {
 		$this->directory_manager = new DirectoryManager();
 		$effective_user_id       = $this->directory_manager->get_effective_user_id( $user_id );
 		$safe_filename           = $this->sanitize_filename( $filename );
+		$workspace               = WordPressWorkspaceScope::current();
 
 		$this->scope = new AgentMemoryScope(
 			$layer ?? self::resolve_layer_for( $safe_filename ),
+			$workspace->workspace_type,
+			$workspace->workspace_id,
 			$effective_user_id,
 			$agent_id,
 			$safe_filename
@@ -221,7 +231,8 @@ class AgentMemory {
 	public static function list_layer( string $layer, int $user_id = 0, int $agent_id = 0 ): array {
 		$dm                = new DirectoryManager();
 		$effective_user_id = $dm->get_effective_user_id( $user_id );
-		$scope_query       = new AgentMemoryScope( $layer, $effective_user_id, $agent_id, '' );
+		$workspace         = WordPressWorkspaceScope::current();
+		$scope_query       = new AgentMemoryScope( $layer, $workspace->workspace_type, $workspace->workspace_id, $effective_user_id, $agent_id, '' );
 		$store             = AgentMemoryStoreFactory::for_scope( $scope_query );
 
 		return $store->list_layer( $scope_query );
@@ -249,7 +260,8 @@ class AgentMemory {
 	public static function list_subtree( string $layer, int $user_id, int $agent_id, string $prefix ): array {
 		$dm                = new DirectoryManager();
 		$effective_user_id = $dm->get_effective_user_id( $user_id );
-		$scope_query       = new AgentMemoryScope( $layer, $effective_user_id, $agent_id, '' );
+		$workspace         = WordPressWorkspaceScope::current();
+		$scope_query       = new AgentMemoryScope( $layer, $workspace->workspace_type, $workspace->workspace_id, $effective_user_id, $agent_id, '' );
 		$store             = AgentMemoryStoreFactory::for_scope( $scope_query );
 
 		return $store->list_subtree( $scope_query, $prefix );
@@ -320,11 +332,12 @@ class AgentMemory {
 	 * section-level merging.
 	 *
 	 * @since next
-	 * @param string $content New full file content.
+	 * @param string                   $content  New full file content.
+	 * @param AgentMemoryMetadata|null $metadata Optional Agents API provenance/trust metadata.
 	 * @return array{success: bool, message: string, file_size?: int, warning?: string}
 	 */
-	public function replace_all( string $content ): array {
-		$write = $this->store->write( $this->scope, $content );
+	public function replace_all( string $content, ?AgentMemoryMetadata $metadata = null ): array {
+		$write = $this->store->write( $this->scope, $content, null, $metadata );
 
 		if ( ! $write->success ) {
 			return array(
@@ -641,10 +654,10 @@ class AgentMemory {
 	 * @since next
 	 *
 	 * @param AgentMemoryWriteResult $write Successful store write result.
-	 * @return array{layer: string, user_id: int, agent_id: int, filename: string, key: string, hash: string, bytes: int}
+	 * @return array{layer: string, user_id: int, agent_id: int, filename: string, key: string, hash: string, bytes: int, metadata?: array, unsupported_metadata_fields?: string[]}
 	 */
 	private function event_metadata( AgentMemoryWriteResult $write ): array {
-		return array(
+		$metadata = array(
 			'layer'    => $this->scope->layer,
 			'user_id'  => $this->scope->user_id,
 			'agent_id' => $this->scope->agent_id,
@@ -653,6 +666,16 @@ class AgentMemory {
 			'hash'     => $write->hash,
 			'bytes'    => $write->bytes,
 		);
+
+		if ( null !== $write->metadata ) {
+			$metadata['metadata'] = $write->metadata->to_array();
+		}
+
+		if ( array() !== $write->unsupported_metadata_fields ) {
+			$metadata['unsupported_metadata_fields'] = $write->unsupported_metadata_fields;
+		}
+
+		return $metadata;
 	}
 
 	/**

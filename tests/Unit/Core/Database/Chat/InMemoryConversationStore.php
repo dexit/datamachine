@@ -13,7 +13,8 @@
 namespace DataMachine\Tests\Unit\Core\Database\Chat;
 
 use DataMachine\Core\Database\Chat\ConversationStoreInterface;
-use DataMachine\Engine\AI\AgentMessageEnvelope;
+use AgentsAPI\AI\AgentMessageEnvelope;
+use AgentsAPI\Core\Workspace\AgentWorkspaceScope;
 
 class InMemoryConversationStore implements ConversationStoreInterface {
 
@@ -24,27 +25,93 @@ class InMemoryConversationStore implements ConversationStoreInterface {
 	 */
 	private array $sessions = array();
 
-	public function create_session( int $user_id, int $agent_id = 0, array $metadata = array(), string $context = 'chat' ): string {
+	/** @var array<string, array{token: string, expires_at: int}> */
+	private array $locks = array();
+
+	/** @var int|null Test-controlled clock. */
+	private ?int $now = null;
+
+	/** @var int Lock token counter. */
+	private int $lock_counter = 0;
+
+	public function set_clock( int $now ): void {
+		$this->now = $now;
+	}
+
+	public function create_session( ...$args ): string {
+		list( $workspace, $user_id, $agent_id, $metadata, $context ) = $this->normalize_create_session_args( $args );
+
 		$session_id = 'mem-' . bin2hex( random_bytes( 6 ) );
 		$now        = gmdate( 'Y-m-d H:i:s' );
+		$metadata   = array_merge( $metadata, $workspace->to_array() );
 
 		$this->sessions[ $session_id ] = array(
-			'session_id'   => $session_id,
-			'user_id'      => $user_id,
-			'agent_id'     => $agent_id > 0 ? $agent_id : null,
-			'title'        => null,
-			'messages'     => array(),
-			'metadata'     => $metadata,
-			'provider'     => null,
-			'model'        => null,
-			'context'      => $context,
-			'created_at'   => $now,
-			'updated_at'   => $now,
-			'last_read_at' => null,
-			'expires_at'   => null,
+			'session_id'     => $session_id,
+			'workspace_type' => $workspace->workspace_type,
+			'workspace_id'   => $workspace->workspace_id,
+			'user_id'        => $user_id,
+			'agent_id'       => $agent_id > 0 ? $agent_id : null,
+			'title'          => null,
+			'messages'       => array(),
+			'metadata'       => $metadata,
+			'provider'       => null,
+			'model'          => null,
+			'context'        => $context,
+			'created_at'     => $now,
+			'updated_at'     => $now,
+			'last_read_at'   => null,
+			'expires_at'     => null,
 		);
 
 		return $session_id;
+	}
+
+	/**
+	 * @param array $args Raw create-session arguments.
+	 * @return array{0:AgentWorkspaceScope,1:int,2:int,3:array,4:string}
+	 */
+	private function normalize_create_session_args( array $args ): array {
+		if ( isset( $args[0] ) && $args[0] instanceof AgentWorkspaceScope ) {
+			return array(
+				$args[0],
+				(int) ( $args[1] ?? 0 ),
+				(int) ( $args[2] ?? 0 ),
+				is_array( $args[3] ?? null ) ? $args[3] : array(),
+				(string) ( $args[4] ?? 'chat' ),
+			);
+		}
+
+		return array(
+			AgentWorkspaceScope::from_parts( 'site', '1' ),
+			(int) ( $args[0] ?? 0 ),
+			(int) ( $args[1] ?? 0 ),
+			is_array( $args[2] ?? null ) ? $args[2] : array(),
+			(string) ( $args[3] ?? 'chat' ),
+		);
+	}
+
+	/**
+	 * @param array $args Raw pending-session arguments.
+	 * @return array{0:AgentWorkspaceScope,1:int,2:int,3:string,4:int|null}
+	 */
+	private function normalize_recent_pending_session_args( array $args ): array {
+		if ( isset( $args[0] ) && $args[0] instanceof AgentWorkspaceScope ) {
+			return array(
+				$args[0],
+				(int) ( $args[1] ?? 0 ),
+				(int) ( $args[2] ?? 600 ),
+				(string) ( $args[3] ?? 'chat' ),
+				isset( $args[4] ) ? (int) $args[4] : null,
+			);
+		}
+
+		return array(
+			AgentWorkspaceScope::from_parts( 'site', '1' ),
+			(int) ( $args[0] ?? 0 ),
+			(int) ( $args[1] ?? 600 ),
+			(string) ( $args[2] ?? 'chat' ),
+			isset( $args[3] ) ? (int) $args[3] : null,
+		);
 	}
 
 	public function get_session( string $session_id ): ?array {
@@ -67,6 +134,36 @@ class InMemoryConversationStore implements ConversationStoreInterface {
 			$this->sessions[ $session_id ]['model'] = $model;
 		}
 
+		return true;
+	}
+
+	public function acquire_session_lock( string $session_id, int $ttl_seconds = 300 ): ?string {
+		if ( ! isset( $this->sessions[ $session_id ] ) ) {
+			return null;
+		}
+
+		$now    = $this->now ?? time();
+		$active = $this->locks[ $session_id ] ?? null;
+		if ( null !== $active && $active['expires_at'] > $now ) {
+			return null;
+		}
+
+		$token                       = 'mem-lock-' . ++$this->lock_counter;
+		$this->locks[ $session_id ] = array(
+			'token'      => $token,
+			'expires_at' => $now + max( 1, $ttl_seconds ),
+		);
+
+		return $token;
+	}
+
+	public function release_session_lock( string $session_id, string $lock_token ): bool {
+		$active = $this->locks[ $session_id ] ?? null;
+		if ( null === $active || $active['token'] !== $lock_token ) {
+			return false;
+		}
+
+		unset( $this->locks[ $session_id ] );
 		return true;
 	}
 
@@ -136,12 +233,14 @@ class InMemoryConversationStore implements ConversationStoreInterface {
 		return $count;
 	}
 
-	public function get_recent_pending_session( int $user_id, int $seconds = 600, string $context = 'chat', ?int $token_id = null ): ?array {
+	public function get_recent_pending_session( ...$args ): ?array {
+		list( $workspace, $user_id, $seconds, $context, $token_id ) = $this->normalize_recent_pending_session_args( $args );
+
 		$cutoff = gmdate( 'Y-m-d H:i:s', time() - $seconds );
 		$best   = null;
 
 		foreach ( $this->sessions as $session ) {
-			if ( (int) $session['user_id'] !== $user_id ) {
+			if ( $session['workspace_type'] !== $workspace->workspace_type || $session['workspace_id'] !== $workspace->workspace_id || (int) $session['user_id'] !== $user_id ) {
 				continue;
 			}
 			if ( $session['context'] !== $context ) {

@@ -2,6 +2,179 @@
 
 All notable changes to Data Machine will be documented in this file.
 
+## [0.104.0] - 2026-05-05
+
+### Added
+- CLI commands to reassign agent_id on pipelines and flows
+
+### Changed
+- Preserve job data when retry is pending
+- Revert #1790 and finish wp-ai-client prompt-dispatch fix
+- Soft-skip AI steps that produce no actionable output
+- Report bundle runtime queue drift
+- Consume Agents API overflow strategy
+- Consume Agents API loop events
+- Consume Agents API transcript lock contract
+- Consume Agents API caller context
+- Consume Agents API workspace scope
+- Consume Agents API memory context contracts
+- Consume durable Agents API approval contracts
+- Harden guideline-backed memory capability checks
+- Consume Agents API consent policy contracts
+- Consume Agents API tool policy contracts
+- Adopt agent authorization contracts
+- Consume updated Agents API substrate
+
+### Fixed
+- Fix flow user message step resolution
+- Fix wp-ai-client pipeline prompt dispatch
+
+## [0.103.14] - 2026-05-03
+
+### Changed
+- Consume Agents API pending store contract
+- Consume Agents API action policy vocabulary
+- Consume Agents API approval resolver contracts
+- Adopt Agents API approval envelopes
+- Persist pending actions durably
+- Expose generic run metrics
+- Add generic job retry backoff policy
+- full end-to-end adoption of agents-api substrate, remove DM product loop
+
+### Fixed
+- project plugin bundle artifacts into packages
+- satisfy stale action recovery lint
+- reconcile terminal-backed stale actions
+
+## [0.103.13] - 2026-05-02
+
+### Fixed
+- propagate wp-ai-client request timeouts
+
+## [0.103.12] - 2026-05-02
+
+### Fixed
+- run drain action command in-process
+
+## [0.103.11] - 2026-05-02
+
+### Changed
+- make SITE.md and NETWORK.md composable via SectionRegistry
+
+### Fixed
+- satisfy CI lint for flow command
+- run drain actions by id
+- drain Data Machine batch actions
+- persist wp-ai-client metadata cache
+
+## [0.103.10] - 2026-05-01
+
+### Fixed
+- declare items schema on local_search post_types
+
+## [0.103.9] - 2026-05-01
+
+### Fixed
+- allow tool-only result text
+
+## [0.103.8] - 2026-05-01
+
+### Fixed
+- repair stale flow metadata on upgrade
+
+## [0.103.7] - 2026-05-01
+
+### Fixed
+- align upgrade planner assignments
+- normalize package upgrade artifacts
+
+## [0.103.6] - 2026-05-01
+
+### Fixed
+- make duplicate tool call message mode-aware
+
+## [0.103.5] - 2026-05-01
+
+### Fixed
+- remap installed workflow step metadata
+
+## [0.103.4] - 2026-05-01
+
+### Fixed
+- normalize internal message envelopes
+
+## [0.103.3] - 2026-05-01
+
+### Fixed
+- archive runaway memory before AI compaction
+
+## [0.103.2] - 2026-05-01
+
+### Fixed
+- extend wp-ai-client curl low-speed window
+
+## [0.103.1] - 2026-05-01
+
+### Fixed
+- convert wp-ai-client history to message DTOs
+
+## [0.103.0] - 2026-05-01
+
+### Added
+- feat(agents-api): consume standalone package
+- project bundles as agent packages
+- feat(agents-api): add package artifact registry
+- feat(agents-api): add agent package contract
+
+### Changed
+- call wp-ai-client directly
+
+### Fixed
+- preserve matching recurring schedules
+- fix(agents-api): align registration lifecycle
+- extend wp-ai-client request timeout
+
+## [0.102.8] - 2026-04-30
+
+### Changed
+- align agents api execution with wp-ai-client
+- refactor(agents-api): align agent registry with core lifecycle
+
+### Fixed
+- claim in-flight source items
+
+## [0.102.7] - 2026-04-30
+
+### Fixed
+- preserve explicit AI failure statuses
+
+## [0.102.6] - 2026-04-30
+
+### Changed
+- refactor(agents-api): move substrate contracts to neutral namespace
+- refactor(agents-api): harden agent registration facade
+- refactor(agents-api): neutralize conversation tool result contract
+
+## [0.102.5] - 2026-04-30
+
+### Fixed
+- normalize tool schema required flags
+
+## [0.102.4] - 2026-04-30
+
+### Changed
+- route image generation through wp-ai-client
+- migrate provider admin settings to wp-ai-client
+- lock upsert-post format defaults
+- remove ai http client runtime dependency
+- enforce backend-only agents api boundary
+- add agents api module boundary smokes
+- move memory contracts into agents api module
+- move transcript contract into agents api module
+- add tool substrate boundary smoke
+- require wp ai client for agent runtime
+- consolidate agents api substrate contracts
+
 ## [0.102.3] - 2026-04-29
 
 ### Changed

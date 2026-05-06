@@ -21,12 +21,15 @@ WP_CLI::add_command( 'datamachine settings', Commands\SettingsCommand::class );
 WP_CLI::add_command( 'datamachine flows', Commands\Flows\FlowsCommand::class );
 WP_CLI::add_command( 'datamachine alt-text', Commands\AltTextCommand::class );
 WP_CLI::add_command( 'datamachine jobs', Commands\JobsCommand::class );
+WP_CLI::add_command( 'datamachine drain', Commands\DrainCommand::class );
 WP_CLI::add_command( 'datamachine ai', Commands\AICommand::class );
 WP_CLI::add_command( 'datamachine pipelines', Commands\PipelinesCommand::class );
 WP_CLI::add_command( 'datamachine posts', Commands\PostsCommand::class );
 WP_CLI::add_command( 'datamachine logs', Commands\LogsCommand::class );
 WP_CLI::add_command( 'datamachine agent', Commands\AgentsCommand::class );
 WP_CLI::add_command( 'datamachine agents', Commands\AgentsCommand::class );
+WP_CLI::add_command( 'datamachine pending-actions', Commands\PendingActionsCommand::class );
+WP_CLI::add_command( 'datamachine pending-action', Commands\PendingActionsCommand::class );
 
 // Canonical home for agent memory-file operations.
 WP_CLI::add_command( 'datamachine memory', Commands\MemoryCommand::class );

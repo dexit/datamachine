@@ -8,6 +8,8 @@
 
 namespace DataMachine\Engine\Actions\Handlers;
 
+use DataMachine\Core\JobRetryPolicy;
+
 /**
  * Central job failure handling with cleanup, re-queue, and logging.
  */
@@ -42,6 +44,11 @@ class FailJobHandler {
 
 		$specific_reason = $context_data['reason'] ?? $reason;
 		$status          = \DataMachine\Core\JobStatus::failed( $specific_reason );
+		$retry_result    = JobRetryPolicy::maybeRetry( $job_id, (string) $specific_reason, is_array( $context_data ) ? $context_data : array(), $db_jobs );
+
+		if ( ! empty( $retry_result['retried'] ) ) {
+			return true;
+		}
 
 		// Persist structured error context into engine_data so it is
 		// available from `wp datamachine jobs show` without grepping PHP logs.
@@ -55,6 +62,7 @@ class FailJobHandler {
 			'error_trace'   => isset( $context_data['exception_trace'] )
 				? mb_substr( $context_data['exception_trace'], 0, 2000 )
 				: null,
+			'retry_result'  => $retry_result,
 		);
 		// Strip null values so we only store keys that carry information.
 		$error_data = array_filter( $error_data, fn( $v ) => null !== $v );
@@ -121,11 +129,20 @@ class FailJobHandler {
 		}
 
 		$db_processed_items->delete_processed_items( array( 'job_id' => $job_id ) );
+		self::releaseInFlightSourceClaims( $db_processed_items, $job_id, $engine_data );
 
-		$cleanup_files = \DataMachine\Core\PluginSettings::get( 'cleanup_job_data_on_failure', true );
-		$files_cleaned = false;
+		$cleanup_files          = \DataMachine\Core\PluginSettings::get( 'cleanup_job_data_on_failure', true );
+		$files_cleaned          = false;
+		$retry_pending          = self::hasPendingRetry( $engine_data );
 
-		if ( $cleanup_files ) {
+		// Skip cleanup whenever a retry is already scheduled for this job.
+		// JobRetryPolicy::recordRetry writes the next_retry_at timestamp before
+		// rescheduling the next Action Scheduler attempt; deleting the packet
+		// file before that retry runs would orphan the next attempt with no
+		// input data. This is defense-in-depth on top of the duplicate-fail-job
+		// guard in ExecuteStepAbility — even if a future caller fires fail-job
+		// during a pending retry, the data file survives until retry exhausts.
+		if ( $cleanup_files && ! $retry_pending ) {
 			$job = $db_jobs->get_job( $job_id );
 			if ( $job && function_exists( 'datamachine_get_file_context' ) && ! empty( $job['flow_id'] ) ) {
 				$cleanup       = new \DataMachine\Core\FilesRepository\FileCleanup();
@@ -147,9 +164,82 @@ class FailJobHandler {
 				'processed_items_cleaned' => true,
 				'files_cleanup_enabled'   => $cleanup_files,
 				'files_cleaned'           => $files_cleaned,
+				'retry_pending'           => $retry_pending,
 			)
 		);
 
 		return true;
+	}
+
+	/**
+	 * Detect whether the engine snapshot already reflects a scheduled retry.
+	 *
+	 * `JobRetryPolicy::recordRetry` stamps `engine_data['retry']['next_retry_at']`
+	 * before rescheduling the next attempt. Any non-empty value means the policy
+	 * has taken ownership of the failure path — finalizing the failure here would
+	 * race ahead of that retry and (when cleanup is enabled) orphan the rescheduled
+	 * attempt with no input data.
+	 *
+	 * @param array $engine_data Engine snapshot read prior to fail finalization.
+	 * @return bool
+	 */
+	private static function hasPendingRetry( array $engine_data ): bool {
+		$retry = is_array( $engine_data['retry'] ?? null ) ? $engine_data['retry'] : array();
+		return ! empty( $retry['next_retry_at'] );
+	}
+
+	/**
+	 * Release in-flight source-item claims for failed jobs.
+	 *
+	 * Parent fetch jobs own claims by job_id until their children are scheduled;
+	 * child jobs carry item_identifier/source_type in engine_data. Release both
+	 * shapes so failed downstream work can retry on the next fetch tick.
+	 *
+	 * @param \DataMachine\Core\Database\ProcessedItems\ProcessedItems $db_processed_items Processed items repository.
+	 * @param int                                                        $job_id             Failed job ID.
+	 * @param array                                                      $engine_data        Failed job engine data.
+	 * @return void
+	 */
+	private static function releaseInFlightSourceClaims( \DataMachine\Core\Database\ProcessedItems\ProcessedItems $db_processed_items, int $job_id, array $engine_data ): void {
+		$db_processed_items->release_claims_for_job( $job_id );
+
+		$item_identifier = $engine_data['item_identifier'] ?? null;
+		$source_type     = $engine_data['source_type'] ?? null;
+		if ( empty( $item_identifier ) || empty( $source_type ) ) {
+			return;
+		}
+
+		$fetch_flow_step_id = self::resolveFetchFlowStepId( $engine_data );
+		if ( empty( $fetch_flow_step_id ) ) {
+			return;
+		}
+
+		$db_processed_items->release_claim( $fetch_flow_step_id, (string) $source_type, (string) $item_identifier );
+	}
+
+	/**
+	 * Resolve the fetch/event_import step ID from a job engine snapshot.
+	 *
+	 * @param array $engine_data Job engine data.
+	 * @return string|null Fetch flow step ID, or null when unavailable.
+	 */
+	private static function resolveFetchFlowStepId( array $engine_data ): ?string {
+		$flow_config = $engine_data['flow_config'] ?? array();
+		if ( ! is_array( $flow_config ) ) {
+			return null;
+		}
+
+		foreach ( $flow_config as $step_id => $config ) {
+			if ( ! is_array( $config ) ) {
+				continue;
+			}
+
+			$step_type = $config['step_type'] ?? '';
+			if ( in_array( $step_type, array( 'fetch', 'event_import' ), true ) ) {
+				return (string) $step_id;
+			}
+		}
+
+		return null;
 	}
 }

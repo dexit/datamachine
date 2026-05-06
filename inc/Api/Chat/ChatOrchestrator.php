@@ -18,11 +18,14 @@ namespace DataMachine\Api\Chat;
 
 use DataMachine\Core\Database\Chat\ConversationStoreFactory;
 use DataMachine\Core\PluginSettings;
+use DataMachine\Core\Workspace\WordPressWorkspaceScope;
 use DataMachine\Engine\AI\ConversationManager;
-use DataMachine\Engine\AI\AIConversationLoop;
+use DataMachine\Engine\AI\DataMachineAgentConsentPolicy;
 use DataMachine\Engine\AI\Tools\ToolManager;
 use DataMachine\Engine\AI\Tools\ToolPolicyResolver;
 use WP_Error;
+
+use function DataMachine\Engine\AI\datamachine_run_conversation;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -64,9 +67,17 @@ class ChatOrchestrator {
 		$request_id           = $options['request_id'] ?? null;
 		$agent_id             = (int) ( $options['agent_id'] ?? 0 );
 
-		$chat_db          = ConversationStoreFactory::get();
-		$session_metadata = array();
-		$acting_token_id  = \DataMachine\Abilities\PermissionHelper::get_acting_token_id();
+		$chat_db                     = ConversationStoreFactory::get();
+		$session_metadata            = array();
+		$acting_token_id             = \DataMachine\Abilities\PermissionHelper::get_acting_token_id();
+		$transcript_consent_decision = DataMachineAgentConsentPolicy::get()->can_store_transcript(
+			array(
+				'mode'        => 'chat',
+				'interactive' => true,
+				'user_id'     => $user_id,
+				'agent_id'    => $agent_id,
+			)
+		);
 
 		// --- Session resolution ---
 		if ( $session_id ) {
@@ -92,7 +103,7 @@ class ChatOrchestrator {
 			$session_metadata = $session['metadata'] ?? array();
 		} else {
 			// Check for recent pending session to prevent duplicates from timeout retries.
-			$pending_session = $chat_db->get_recent_pending_session( $user_id, 600, 'chat', $acting_token_id );
+			$pending_session = $chat_db->get_recent_pending_session( WordPressWorkspaceScope::current(), $user_id, 600, 'chat', $acting_token_id );
 
 			if ( $pending_session ) {
 				$session_id       = $pending_session['session_id'];
@@ -122,6 +133,11 @@ class ChatOrchestrator {
 			}
 		}
 
+		$lock_token = $chat_db->acquire_session_lock( $session_id );
+		if ( null === $lock_token ) {
+			return self::sessionLockContentionError();
+		}
+
 		// --- Build user message (text or multi-modal with attachments) ---
 		$attachments = $options['attachments'] ?? array();
 
@@ -142,9 +158,12 @@ class ChatOrchestrator {
 			array_merge(
 				$session_metadata,
 				array(
-					'status'        => 'processing',
-					'started_at'    => current_time( 'mysql', true ),
-					'message_count' => count( $messages ),
+					'status'            => 'processing',
+					'started_at'        => current_time( 'mysql', true ),
+					'message_count'     => count( $messages ),
+					'consent_decisions' => array(
+						'store_transcript' => $transcript_consent_decision->to_array(),
+					),
 				)
 			),
 			$provider,
@@ -183,6 +202,7 @@ class ChatOrchestrator {
 		);
 
 		if ( is_wp_error( $result ) ) {
+			$chat_db->release_session_lock( $session_id, $lock_token );
 			return $result;
 		}
 
@@ -228,6 +248,7 @@ class ChatOrchestrator {
 			$provider,
 			$model
 		);
+		$chat_db->release_session_lock( $session_id, $lock_token );
 
 		// --- Title generation for new/untitled sessions ---
 		if ( $update_success ) {
@@ -334,6 +355,10 @@ class ChatOrchestrator {
 		$model                = $session['model'] ?? $chat_defaults['model'];
 		$message_count_before = count( $messages );
 		$selected_pipeline_id = $metadata['selected_pipeline_id'] ?? null;
+		$lock_token           = $chat_db->acquire_session_lock( $session_id );
+		if ( null === $lock_token ) {
+			return self::sessionLockContentionError();
+		}
 
 		$result = self::executeConversationTurn(
 			$session_id,
@@ -350,6 +375,7 @@ class ChatOrchestrator {
 		);
 
 		if ( is_wp_error( $result ) ) {
+			$chat_db->release_session_lock( $session_id, $lock_token );
 			return $result;
 		}
 
@@ -394,6 +420,7 @@ class ChatOrchestrator {
 			$provider,
 			$model
 		);
+		$chat_db->release_session_lock( $session_id, $lock_token );
 
 		$continue_response = array(
 			'session_id'        => $session_id,
@@ -410,6 +437,19 @@ class ChatOrchestrator {
 		do_action( 'datamachine_chat_response_complete', $session_id, $continue_response, (int) ( $session['agent_id'] ?? 0 ), $user_id );
 
 		return $continue_response;
+	}
+
+	/**
+	 * Build a standard response for an actively locked chat transcript.
+	 *
+	 * @return WP_Error
+	 */
+	private static function sessionLockContentionError(): WP_Error {
+		return new WP_Error(
+			'session_lock_contention',
+			__( 'This chat session is already processing another request.', 'data-machine' ),
+			array( 'status' => 409 )
+		);
 	}
 
 	/**
@@ -596,7 +636,7 @@ class ChatOrchestrator {
 			$metadata['source'] = $source;
 		}
 
-		$session_id = $chat_db->create_session( $user_id, $agent_id, $metadata, 'chat' );
+		$session_id = $chat_db->create_session( WordPressWorkspaceScope::current(), $user_id, $agent_id, $metadata, 'chat' );
 
 		if ( empty( $session_id ) ) {
 			return new WP_Error(
@@ -675,7 +715,7 @@ class ChatOrchestrator {
 				$loop_context['client_context'] = $client_context;
 			}
 
-			$loop_result = AIConversationLoop::run(
+			$loop_result = datamachine_run_conversation(
 				$messages,
 				$all_tools,
 				$provider,

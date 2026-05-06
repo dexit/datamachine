@@ -36,10 +36,14 @@
 
 namespace DataMachine\Core\Database\Chat;
 
+use AgentsAPI\Core\Database\Chat\ConversationTranscriptStoreInterface;
+use AgentsAPI\Core\Database\Chat\ConversationTranscriptLockInterface;
+
 defined( 'ABSPATH' ) || exit;
 
 interface ConversationStoreInterface extends
 	ConversationTranscriptStoreInterface,
+	ConversationTranscriptLockInterface,
 	ConversationSessionIndexInterface,
 	ConversationReadStateInterface,
 	ConversationRetentionInterface,

@@ -27,6 +27,9 @@ use DataMachine\Core\PluginSettings;
 use DataMachine\Core\FilesRepository\AgentMemory;
 use DataMachine\Core\FilesRepository\DailyMemory;
 use DataMachine\Engine\AI\RequestBuilder;
+use AgentsAPI\AI\AgentConversationCompaction;
+use AgentsAPI\AI\AgentMarkdownSectionCompactionAdapter;
+use AgentsAPI\AI\AgentMessageEnvelope;
 
 class DailyMemoryTask extends SystemTask {
 
@@ -101,6 +104,17 @@ class DailyMemoryTask extends SystemTask {
 		$memory_content = $result['content'];
 		$original_size  = strlen( $memory_content );
 
+		$overflow_result = $this->maybeHandleDeterministicOverflow( $jobId, $memory, $daily, $memory_content, $original_size, $date );
+		if ( null !== $overflow_result ) {
+			if ( empty( $overflow_result['success'] ) ) {
+				$this->failJob( $jobId, $overflow_result['message'] ?? 'Daily memory overflow split failed.' );
+				return;
+			}
+
+			$this->completeJob( $jobId, $overflow_result );
+			return;
+		}
+
 		// Skip if MEMORY.md is within the recommended threshold and no activity context.
 		$context = $this->gatherContext( $params );
 		if ( $original_size <= AgentMemory::MAX_FILE_SIZE && empty( $context ) ) {
@@ -133,10 +147,7 @@ class DailyMemoryTask extends SystemTask {
 		);
 
 		$messages = array(
-			array(
-				'role'    => 'user',
-				'content' => $prompt,
-			),
+			\DataMachine\Engine\AI\ConversationManager::buildConversationMessage( 'user', $prompt ),
 		);
 
 		$ai_payload = array();
@@ -156,18 +167,18 @@ class DailyMemoryTask extends SystemTask {
 			$ai_payload
 		);
 
-		if ( empty( $response['success'] ) ) {
+		if ( $response instanceof \WP_Error ) {
 			do_action(
 				'datamachine_log',
 				'warning',
-				'Daily memory AI request failed: ' . ( $response['error'] ?? 'Unknown error' ),
+				'Daily memory AI request failed: ' . $response->get_error_message(),
 				array( 'date' => $date )
 			);
-			$this->failJob( $jobId, 'AI request failed: ' . ( $response['error'] ?? 'Unknown error' ) );
+			$this->failJob( $jobId, 'AI request failed: ' . $response->get_error_message() );
 			return;
 		}
 
-		$ai_output = trim( $response['data']['content'] ?? '' );
+		$ai_output = trim( RequestBuilder::resultText( $response ) );
 		$ai_output = str_replace( '\n', "\n", $ai_output );
 
 		if ( empty( $ai_output ) ) {
@@ -302,7 +313,7 @@ class DailyMemoryTask extends SystemTask {
 
 		$write_result = $memory->replace_all( $new_content );
 		if ( empty( $write_result['success'] ) ) {
-			$this->failJob( $jobId, $write_result['message'] ?? 'Failed to persist cleaned memory.' );
+			$this->failJob( $jobId, $write_result['message'] );
 			return;
 		}
 
@@ -364,6 +375,228 @@ class DailyMemoryTask extends SystemTask {
 				'archived_size' => $archived_size,
 			)
 		);
+	}
+
+	/**
+	 * Deterministically split very large MEMORY.md files before invoking AI.
+	 *
+	 * Extremely large memory files can exceed the practical request envelope for
+	 * non-streaming provider calls. This path archives whole tail sections verbatim
+	 * and leaves a small persistent file with an archive pointer, preserving every
+	 * byte without asking the model to process the entire oversized file.
+	 *
+	 * @param int         $jobId          Job ID.
+	 * @param AgentMemory $memory         Agent memory facade.
+	 * @param DailyMemory $daily          Daily memory facade.
+	 * @param string      $memory_content Current MEMORY.md content.
+	 * @param int         $original_size  Original byte size.
+	 * @param string      $date           Archive date.
+	 * @return array|null Result array when handled, null when normal AI compaction should proceed.
+	 */
+	private function maybeHandleDeterministicOverflow( int $jobId, AgentMemory $memory, DailyMemory $daily, string $memory_content, int $original_size, string $date ): ?array {
+		$threshold = (int) apply_filters(
+			'datamachine_daily_memory_overflow_threshold',
+			AgentMemory::MAX_FILE_SIZE * 4,
+			array(
+				'job_id'        => $jobId,
+				'date'          => $date,
+				'original_size' => $original_size,
+			)
+		);
+
+		if ( $threshold <= 0 || $original_size <= $threshold ) {
+			return null;
+		}
+
+		$target_size = (int) apply_filters(
+			'datamachine_daily_memory_overflow_target_size',
+			AgentMemory::MAX_FILE_SIZE,
+			array(
+				'job_id'        => $jobId,
+				'date'          => $date,
+				'original_size' => $original_size,
+			)
+		);
+		$target_size = max( 1024, $target_size );
+
+		$split = self::planMemoryOverflowArchive( $memory_content, $target_size, $date );
+		if ( empty( $split['archived'] ) ) {
+			return null;
+		}
+
+		$write_result = $memory->replace_all( $split['persistent'] );
+		if ( empty( $write_result['success'] ) ) {
+			return array(
+				'success' => false,
+				'message' => $write_result['message'],
+			);
+		}
+
+		$parts        = explode( '-', $date );
+		$archive_body = "\n### Archived from oversized MEMORY.md\n\n" . $split['archived'] . "\n";
+		$append       = $daily->append( $parts[0], $parts[1], $parts[2], $archive_body );
+		if ( empty( $append['success'] ) ) {
+			return array(
+				'success' => false,
+				'message' => $append['message'],
+			);
+		}
+
+		$archived_size = strlen( $split['archived'] );
+		$new_size      = strlen( $split['persistent'] );
+
+		do_action(
+			'datamachine_log',
+			'info',
+			sprintf(
+				'Daily memory overflow split complete: %s -> %s (%s archived verbatim to daily/%s)',
+				size_format( $original_size ),
+				size_format( $new_size ),
+				size_format( $archived_size ),
+				$date
+			),
+			array(
+				'date'              => $date,
+				'original_size'     => $original_size,
+				'new_size'          => $new_size,
+				'archived_size'     => $archived_size,
+				'archived_blocks'   => $split['archived_blocks'],
+				'persistent_blocks' => $split['persistent_blocks'],
+			)
+		);
+
+		return array(
+			'success'           => true,
+			'date'              => $date,
+			'original_size'     => $original_size,
+			'new_size'          => $new_size,
+			'archived_size'     => $archived_size,
+			'overflow_split'    => true,
+			'archived_blocks'   => $split['archived_blocks'],
+			'persistent_blocks' => $split['persistent_blocks'],
+		);
+	}
+
+	/**
+	 * Plan a deterministic overflow archive through Agents API compaction primitives.
+	 *
+	 * @param string $content     Full MEMORY.md content.
+	 * @param int    $target_size Target persistent size in bytes.
+	 * @param string $date        Archive date.
+	 * @return array{persistent: string, archived: string, persistent_blocks: int, archived_blocks: int}
+	 */
+	private static function planMemoryOverflowArchive( string $content, int $target_size, string $date ): array {
+		$items         = AgentMarkdownSectionCompactionAdapter::parse( $content );
+		$section_count = 0;
+		foreach ( $items as $item ) {
+			if ( AgentMarkdownSectionCompactionAdapter::TYPE_SECTION === ( $item['type'] ?? '' ) ) {
+				++$section_count;
+			}
+		}
+
+		if ( $section_count < 2 ) {
+			return array(
+				'persistent'        => $content,
+				'archived'          => '',
+				'persistent_blocks' => count( $items ),
+				'archived_blocks'   => 0,
+			);
+		}
+
+		$pointer         = self::buildOverflowArchivePointer( $date );
+		$retained_budget = max( 1, $target_size - strlen( $pointer ) );
+		$messages        = array();
+
+		// Agents API's overflow archive strategy archives the start of a stream.
+		// Daily Memory overflow needs tail-section archival, so project sections in
+		// reverse order and restore markdown order after Agents API chooses the cut.
+		foreach ( array_reverse( $items ) as $item ) {
+			$messages[] = AgentMessageEnvelope::text(
+				'system',
+				(string) ( $item['content'] ?? '' ),
+				array(
+					'datamachine_markdown_item' => $item,
+				)
+			);
+		}
+
+		$result = AgentConversationCompaction::compact(
+			$messages,
+			array(
+				'overflow_archive_enabled'   => true,
+				'overflow_threshold_bytes'   => 1,
+				'overflow_retained_messages' => max( 1, count( $messages ) - 1 ),
+				'overflow_retained_bytes'    => $retained_budget,
+				'overflow_stub_prefix'       => 'Daily Memory overflow archived without summarization.',
+				'preserve_tool_boundaries'   => false,
+			),
+			static function (): string {
+				throw new \RuntimeException( 'Daily Memory deterministic overflow must not invoke a summarizer.' );
+			}
+		);
+
+		$status = (string) ( $result['metadata']['compaction']['status'] ?? '' );
+		if ( AgentConversationCompaction::STATUS_ARCHIVED !== $status || empty( $result['archive_items'] ) ) {
+			return array(
+				'persistent'        => $content,
+				'archived'          => '',
+				'persistent_blocks' => count( $items ),
+				'archived_blocks'   => 0,
+			);
+		}
+
+		$archived_items   = self::markdownItemsFromCompactionMessages( $result['archive_items'] );
+		$persistent_items = self::markdownItemsFromCompactionMessages( $result['messages'] );
+
+		return array(
+			'persistent'        => rtrim( AgentMarkdownSectionCompactionAdapter::reconstruct( $persistent_items ) . $pointer ) . "\n",
+			'archived'          => AgentMarkdownSectionCompactionAdapter::reconstruct( $archived_items ),
+			'persistent_blocks' => count( $persistent_items ),
+			'archived_blocks'   => count( $archived_items ),
+		);
+	}
+
+	/**
+	 * Build the Data Machine-owned overflow archive pointer text.
+	 *
+	 * @param string $date Archive date.
+	 * @return string Pointer markdown.
+	 */
+	private static function buildOverflowArchivePointer( string $date ): string {
+		return sprintf(
+			"\n## Archived Memory Overflow\n\nOn %s, Daily Memory archived older MEMORY.md sections verbatim to `daily/%s`. Use daily memory search/read when those details are needed.\n",
+			$date,
+			str_replace( '-', '/', $date ) . '.md'
+		);
+	}
+
+	/**
+	 * Extract original markdown items from Agents API compaction messages.
+	 *
+	 * @param array<int, array<string, mixed>> $messages Compaction messages.
+	 * @return array<int, array<string, mixed>> Markdown items in source document order.
+	 */
+	private static function markdownItemsFromCompactionMessages( array $messages ): array {
+		$items = array();
+		foreach ( $messages as $message ) {
+			$metadata = is_array( $message['metadata'] ?? null ) ? $message['metadata'] : array();
+			$item     = $metadata['datamachine_markdown_item'] ?? null;
+			if ( is_array( $item ) ) {
+				$items[] = $item;
+			}
+		}
+
+		usort(
+			$items,
+			static function ( array $left, array $right ): int {
+				$left_order  = (int) ( $left['metadata']['order'] ?? 0 );
+				$right_order = (int) ( $right['metadata']['order'] ?? 0 );
+
+				return $left_order <=> $right_order;
+			}
+		);
+
+		return $items;
 	}
 
 	/**

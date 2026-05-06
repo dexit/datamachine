@@ -127,11 +127,20 @@ function datamachine_run_schema_migrations(): void {
 	// canonical mode_models storage (idempotent).
 	datamachine_migrate_settings_mode_models();
 
+	// Migrate legacy ai-http-client provider keys to Connectors settings (idempotent).
+	datamachine_migrate_ai_provider_keys_to_connectors();
+
 	// Drop redundant _datamachine_post_pipeline_id rows (#1091). Idempotent.
 	datamachine_drop_redundant_post_pipeline_meta();
 
 	// Ensure installed bundle artifact tracking table exists on upgraded installs (#1531).
 	datamachine_migrate_bundle_artifacts_table();
+
+	// Add in-flight source-item claim state to processed_items (#1682).
+	datamachine_migrate_processed_item_claims();
+
+	// Ensure durable pending-action storage exists for background approval queues (#1736/#1737).
+	datamachine_migrate_pending_actions_table();
 }
 
 /**

@@ -22,6 +22,9 @@
 
 namespace DataMachine\Core\Database\Chat;
 
+use AgentsAPI\Core\Database\Chat\ConversationTranscriptStoreInterface;
+use AgentsAPI\Core\Workspace\AgentWorkspaceScope;
+
 defined( 'ABSPATH' ) || exit;
 
 class ConversationStoreFactory {
@@ -116,6 +119,17 @@ class ConversationStoreFactory {
 	 */
 	public static function get_transcript_store(): ConversationTranscriptStoreInterface {
 		return self::get();
+	}
+
+	/**
+	 * Resolve Data Machine's default workspace scope for local chat/transcripts.
+	 *
+	 * @return AgentWorkspaceScope
+	 */
+	public static function default_workspace(): AgentWorkspaceScope {
+		$blog_id = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 1;
+
+		return AgentWorkspaceScope::from_parts( 'site', (string) max( 1, $blog_id ) );
 	}
 
 	/**

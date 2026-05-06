@@ -38,6 +38,10 @@
 
 namespace DataMachine\Engine\AI\Actions;
 
+use AgentsAPI\AI\Approvals\ApprovalDecision;
+use AgentsAPI\AI\Approvals\PendingAction;
+use AgentsAPI\AI\Approvals\PendingActionHandlerInterface;
+use AgentsAPI\AI\Approvals\PendingActionStatus;
 use DataMachine\Abilities\PermissionHelper;
 
 defined( 'ABSPATH' ) || exit;
@@ -50,6 +54,25 @@ class ResolvePendingActionAbility {
 	 * @var bool
 	 */
 	private static bool $registered = false;
+
+	/**
+	 * Agents API resolver adapter singleton.
+	 *
+	 * @var PendingActionResolverAdapter|null
+	 */
+	private static ?PendingActionResolverAdapter $adapter = null;
+
+	/**
+	 * Return the Agents API resolver adapter.
+	 */
+	public static function adapter(): PendingActionResolverAdapter {
+		if ( null === self::$adapter ) {
+			self::loadApprovalContracts();
+			self::$adapter = new PendingActionResolverAdapter();
+		}
+
+		return self::$adapter;
+	}
 
 	public function __construct() {
 		if ( self::$registered ) {
@@ -169,22 +192,25 @@ class ResolvePendingActionAbility {
 	 * @return array
 	 */
 	public static function execute( array $input ): array {
-		$action_id = isset( $input['action_id'] ) ? sanitize_text_field( $input['action_id'] ) : '';
-		$decision  = isset( $input['decision'] ) ? sanitize_text_field( $input['decision'] ) : '';
+		$action_id      = isset( $input['action_id'] ) ? sanitize_text_field( $input['action_id'] ) : '';
+		$decision_value = isset( $input['decision'] ) ? sanitize_text_field( $input['decision'] ) : '';
 
-		if ( '' === $action_id || '' === $decision ) {
+		if ( '' === $action_id || '' === $decision_value ) {
 			return array(
 				'success' => false,
 				'error'   => 'action_id and decision are required.',
 			);
 		}
 
-		if ( ! in_array( $decision, array( 'accepted', 'rejected' ), true ) ) {
+		$decision = self::approvalDecisionFromValue( $decision_value );
+		if ( null === $decision ) {
 			return array(
 				'success' => false,
 				'error'   => 'decision must be "accepted" or "rejected".',
 			);
 		}
+
+		$decision_value = $decision->value();
 
 		$payload = PendingActionStore::get( $action_id );
 		if ( null === $payload ) {
@@ -195,9 +221,13 @@ class ResolvePendingActionAbility {
 			);
 		}
 
-		$kind        = (string) ( $payload['kind'] ?? '' );
-		$user_id     = get_current_user_id();
-		$apply_input = isset( $payload['apply_input'] ) && is_array( $payload['apply_input'] ) ? $payload['apply_input'] : array();
+		$kind             = (string) ( $payload['kind'] ?? '' );
+		$user_id          = get_current_user_id();
+		$apply_input      = isset( $payload['apply_input'] ) && is_array( $payload['apply_input'] ) ? $payload['apply_input'] : array();
+		$resolver_payload = isset( $input['payload'] ) && is_array( $input['payload'] ) ? $input['payload'] : array();
+		$resolver_context = isset( $input['context'] ) && is_array( $input['context'] ) ? $input['context'] : array();
+		$resolver         = isset( $input['resolver'] ) ? sanitize_text_field( $input['resolver'] ) : self::resolverFromCurrentUser();
+		$pending_action   = PendingActionStore::get_action( $action_id );
 
 		if ( '' === $kind ) {
 			PendingActionStore::delete( $action_id );
@@ -211,11 +241,11 @@ class ResolvePendingActionAbility {
 		$handlers = self::getKindHandlers();
 		$handler  = $handlers[ $kind ] ?? null;
 
-		if ( ! is_array( $handler ) || empty( $handler['apply'] ) || ! is_callable( $handler['apply'] ) ) {
+		if ( ! is_array( $handler ) || empty( $handler['apply'] ) || ! self::isApplyHandler( $handler['apply'] ) ) {
 			// No handler registered — can't apply, but reject is still safe.
-			if ( 'rejected' === $decision ) {
-				PendingActionStore::delete( $action_id );
-				self::fireResolvedAction( $decision, $action_id, $kind, $payload, null );
+			if ( $decision->is_rejected() ) {
+				PendingActionStore::record_resolution( $action_id, PendingActionStatus::REJECTED, null, null, $resolver, array( 'reason' => 'no_handler_rejected' ) );
+				self::fireResolvedAction( $decision_value, $action_id, $kind, $payload, null );
 				return array(
 					'success'   => true,
 					'decision'  => 'rejected',
@@ -233,8 +263,26 @@ class ResolvePendingActionAbility {
 		}
 
 		// Optional permission hook per kind.
-		if ( ! empty( $handler['can_resolve'] ) && is_callable( $handler['can_resolve'] ) ) {
-			$allowed = call_user_func( $handler['can_resolve'], $payload, $decision, $user_id );
+		$contract_allowed = self::canResolveWithHandlerContract( $handler, $pending_action, $decision, $resolver_payload, $resolver_context );
+		if ( is_wp_error( $contract_allowed ) ) {
+			return array(
+				'success'   => false,
+				'error'     => $contract_allowed->get_error_message(),
+				'action_id' => $action_id,
+				'kind'      => $kind,
+			);
+		}
+		if ( false === $contract_allowed ) {
+			return array(
+				'success'   => false,
+				'error'     => 'You do not have permission to resolve this pending action.',
+				'action_id' => $action_id,
+				'kind'      => $kind,
+			);
+		}
+
+		if ( null === $contract_allowed && ! empty( $handler['can_resolve'] ) && is_callable( $handler['can_resolve'] ) ) {
+			$allowed = call_user_func( $handler['can_resolve'], $payload, $decision_value, $user_id );
 			if ( is_wp_error( $allowed ) ) {
 				return array(
 					'success'   => false,
@@ -253,11 +301,9 @@ class ResolvePendingActionAbility {
 			}
 		}
 
-		// Always clean up the stored payload after a decision is made.
-		PendingActionStore::delete( $action_id );
-
-		if ( 'rejected' === $decision ) {
-			self::fireResolvedAction( $decision, $action_id, $kind, $payload, null );
+		if ( $decision->is_rejected() ) {
+			PendingActionStore::record_resolution( $action_id, PendingActionStatus::REJECTED, null, null, $resolver );
+			self::fireResolvedAction( $decision_value, $action_id, $kind, $payload, null );
 			return array(
 				'success'   => true,
 				'decision'  => 'rejected',
@@ -267,11 +313,11 @@ class ResolvePendingActionAbility {
 		}
 
 		// Accepted: invoke the apply handler with the stored input.
-		$result = call_user_func( $handler['apply'], $apply_input, $payload );
-
-		self::fireResolvedAction( $decision, $action_id, $kind, $payload, $result );
+		$result = self::applyHandler( $handler, $decision, $apply_input, $payload, $resolver_payload, $resolver_context, $pending_action );
 
 		if ( is_wp_error( $result ) ) {
+			PendingActionStore::record_resolution( $action_id, PendingActionStatus::ACCEPTED, null, $result->get_error_message(), $resolver );
+			self::fireResolvedAction( $decision_value, $action_id, $kind, $payload, $result );
 			return array(
 				'success'   => false,
 				'decision'  => 'accepted',
@@ -282,6 +328,8 @@ class ResolvePendingActionAbility {
 		}
 
 		if ( is_array( $result ) && array_key_exists( 'success', $result ) && false === $result['success'] ) {
+			PendingActionStore::record_resolution( $action_id, PendingActionStatus::ACCEPTED, $result, $result['error'] ?? 'Apply handler reported failure.', $resolver );
+			self::fireResolvedAction( $decision_value, $action_id, $kind, $payload, $result );
 			return array(
 				'success'   => false,
 				'decision'  => 'accepted',
@@ -291,6 +339,9 @@ class ResolvePendingActionAbility {
 				'error'     => $result['error'] ?? 'Apply handler reported failure.',
 			);
 		}
+
+		PendingActionStore::record_resolution( $action_id, PendingActionStatus::ACCEPTED, $result, null, $resolver );
+		self::fireResolvedAction( $decision_value, $action_id, $kind, $payload, $result );
 
 		return array(
 			'success'   => true,
@@ -323,6 +374,114 @@ class ResolvePendingActionAbility {
 		 */
 		$handlers = apply_filters( 'datamachine_pending_action_handlers', array() );
 		return is_array( $handlers ) ? $handlers : array();
+	}
+
+	/**
+	 * Apply a pending-action handler.
+	 *
+	 * The legacy Data Machine handler map remains the compatibility surface today.
+	 * When Agents API PR #51's handler contract is installed, object handlers can
+	 * implement it and be placed under the same `apply` key without introducing a
+	 * parallel Data Machine primitive.
+	 *
+	 * @param array            $handler          Handler configuration.
+	 * @param ApprovalDecision $decision         Accepted/rejected decision.
+	 * @param array            $apply_input      Stored apply input.
+	 * @param array            $payload          Stored pending action payload.
+	 * @param array            $resolver_payload Fresh resolver payload.
+	 * @param array            $resolver_context Optional resolver context.
+	 * @return mixed
+	 */
+	private static function applyHandler( array $handler, ApprovalDecision $decision, array $apply_input, array $payload, array $resolver_payload = array(), array $resolver_context = array(), ?PendingAction $pending_action = null ) {
+		self::loadApprovalContracts();
+
+		$apply = $handler['apply'];
+		if ( $apply instanceof PendingActionHandlerInterface ) {
+			if ( null === $pending_action ) {
+				return new \WP_Error( 'invalid_pending_action', 'Stored pending action could not be normalized.' );
+			}
+
+			return $apply->handle_pending_action( $pending_action, $decision, $resolver_payload, $resolver_context );
+		}
+
+		return call_user_func( $apply, $apply_input, $payload );
+	}
+
+	/**
+	 * Determine if a handler entry can apply accepted actions.
+	 *
+	 * @param mixed $apply Handler entry.
+	 * @return bool
+	 */
+	private static function isApplyHandler( $apply ): bool {
+		if ( is_callable( $apply ) ) {
+			return true;
+		}
+
+		self::loadApprovalContracts();
+
+		return $apply instanceof PendingActionHandlerInterface;
+	}
+
+	/**
+	 * Run the Agents API handler-level permission contract when present.
+	 *
+	 * @return bool|\WP_Error|null Null means no contract handler was provided.
+	 */
+	private static function canResolveWithHandlerContract( array $handler, ?PendingAction $pending_action, ApprovalDecision $decision, array $resolver_payload, array $resolver_context ) {
+		self::loadApprovalContracts();
+
+		$apply = $handler['apply'] ?? null;
+		if ( ! $apply instanceof PendingActionHandlerInterface ) {
+			return null;
+		}
+
+		if ( null === $pending_action ) {
+			return new \WP_Error( 'invalid_pending_action', 'Stored pending action could not be normalized.' );
+		}
+
+		return $apply->can_resolve_pending_action( $pending_action, $decision, $resolver_payload, $resolver_context );
+	}
+
+	/**
+	 * Normalize an external decision value to the Agents API approval contract.
+	 *
+	 * @param string $value Request decision value.
+	 * @return ApprovalDecision|null
+	 */
+	private static function approvalDecisionFromValue( string $value ): ?ApprovalDecision {
+		self::loadApprovalContracts();
+
+		try {
+			return ApprovalDecision::from_string( $value );
+		} catch ( \InvalidArgumentException $e ) {
+			return null;
+		}
+	}
+
+	/**
+	 * Load Composer-installed Agents API approval contracts when the plugin is not active.
+	 */
+	private static function loadApprovalContracts(): void {
+		if ( class_exists( ApprovalDecision::class ) && class_exists( PendingAction::class ) && class_exists( PendingActionStatus::class ) && interface_exists( PendingActionHandlerInterface::class ) ) {
+			return;
+		}
+
+		$approvals_path = dirname( __DIR__, 4 ) . '/vendor/automattic/agents-api/src/Approvals/';
+		foreach ( array( 'ApprovalDecision.php', 'PendingActionStatus.php', 'PendingAction.php', 'PendingActionHandlerInterface.php', 'PendingActionResolverInterface.php' ) as $file ) {
+			$path = $approvals_path . $file;
+			if ( file_exists( $path ) ) {
+				require_once $path;
+			}
+		}
+	}
+
+	/**
+	 * Build a resolver audit identifier for the active user.
+	 */
+	private static function resolverFromCurrentUser(): string {
+		$user_id = get_current_user_id();
+		return $user_id > 0 ? 'user:' . $user_id : 'system:anonymous';
 	}
 
 	/**
